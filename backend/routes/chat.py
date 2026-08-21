@@ -49,7 +49,7 @@ async def _save_conversation(session_id: str, user_id: int, question: str, answe
             doc_refs = []
             seen = set()
             for s in sources:
-                doc_name = s.get("document_name", s.get("title", s.get("source", "")))
+                doc_name = s.get("filename", s.get("document_name", s.get("title", s.get("source", ""))))
                 if doc_name and doc_name not in seen:
                     seen.add(doc_name)
                     doc_refs.append(doc_name)
@@ -155,7 +155,7 @@ async def chat(request: ChatRequest, raw_request: Request, current_user: dict = 
         if sources:
             for s in sources[:20]:
                 doc_id = s.get("document_id", s.get("doc_id", "unknown"))
-                doc_name = s.get("document_name", s.get("title", s.get("source", "未知文档")))
+                doc_name = s.get("filename", s.get("document_name", s.get("title", s.get("source", "未知文档"))))
                 await record_doc_hit(str(doc_id), str(doc_name), kb_id_str)
 
         estimated_prompt = len(query + context + str(history_for_llm)) // 4

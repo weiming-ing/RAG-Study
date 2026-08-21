@@ -62,13 +62,14 @@ class RAGService:
                     score = r.get("score", 0)
                     if score < threshold:
                         continue
+                    metadata = r.get("metadata", {})
                     sources.append({
                         "content": r.get("content", ""),
-                        "filename": r.get("filename", "未知文档"),
-                        "page": r.get("chunkIndex", 0),
+                        "filename": metadata.get("docName", metadata.get("filename", "未知文档")),
+                        "page": metadata.get("chunkIndex", metadata.get("parentChunkIndex", 0)),
                         "score": round(score, 4),
-                        "doc_id": r.get("docId", ""),
-                        "chunk_index": r.get("chunkIndex", 0),
+                        "doc_id": metadata.get("documentId", r.get("id", "")),
+                        "chunk_index": metadata.get("chunkIndex", metadata.get("parentChunkIndex", 0)),
                     })
                 return sources
         except Exception:

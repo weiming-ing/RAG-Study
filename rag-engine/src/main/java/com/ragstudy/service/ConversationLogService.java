@@ -306,18 +306,6 @@ public class ConversationLogService {
     }
 
     public List<Map<String, Object>> getDocRefRank(int days, int limit) {
-        List<KnowledgeDocument> allDocs = knowledgeDocumentMapper.selectList(null);
-        if (allDocs.isEmpty()) {
-            return new ArrayList<>();
-        }
-
-        Map<String, KnowledgeDocument> docMap = new LinkedHashMap<>();
-        for (KnowledgeDocument doc : allDocs) {
-            if (doc.getFileName() != null && !doc.getFileName().isEmpty()) {
-                docMap.put(doc.getFileName(), doc);
-            }
-        }
-
         List<String> refs = conversationLogMapper.getReferencedChunks(days);
         Map<String, Integer> countMap = new LinkedHashMap<>();
         ObjectMapper mapper = new ObjectMapper();
@@ -332,19 +320,36 @@ public class ConversationLogService {
             } catch (Exception ignored) {}
         }
 
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map.Entry<String, KnowledgeDocument> entry : docMap.entrySet()) {
-            String docName = entry.getKey();
-            Integer count = countMap.getOrDefault(docName, 0);
-            if (count > 0) {
-                KnowledgeDocument doc = entry.getValue();
-                Map<String, Object> item = new LinkedHashMap<>();
-                item.put("doc_id", doc.getId());
-                item.put("doc_name", doc.getFileName());
-                item.put("kb_id", doc.getKbId());
-                item.put("cnt", count);
-                result.add(item);
+        if (countMap.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        Map<String, KnowledgeDocument> docMap = new LinkedHashMap<>();
+        List<KnowledgeDocument> allDocs = knowledgeDocumentMapper.selectList(null);
+        if (allDocs != null) {
+            for (KnowledgeDocument doc : allDocs) {
+                if (doc.getFileName() != null && !doc.getFileName().isEmpty()) {
+                    docMap.put(doc.getFileName(), doc);
+                }
             }
+        }
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : countMap.entrySet()) {
+            String docName = entry.getKey();
+            Integer count = entry.getValue();
+            KnowledgeDocument doc = docMap.get(docName);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("doc_name", docName);
+            item.put("cnt", count);
+            if (doc != null) {
+                item.put("doc_id", doc.getId());
+                item.put("kb_id", doc.getKbId());
+            } else {
+                item.put("doc_id", null);
+                item.put("kb_id", null);
+            }
+            result.add(item);
         }
 
         return result.stream()
