@@ -34,6 +34,10 @@ temp_*
 node_modules/
 rag-admin/dist/
 
+# 模型文件 (通过下载脚本获取)
+rag-engine/src/main/resources/models/onnx/
+rag-engine/src/main/resources/models/.cache/
+
 # Java
 rag-engine/target/
 *.class
