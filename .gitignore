@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# 数据文件
+data/chroma_db/
+data/documents/
+data/*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 临时文件
+temp_*
+*.tmp
+
+# 环境变量
+.env
+.env.local
+
+# Node.js
+node_modules/
+rag-admin/dist/
+
+# Java
+rag-engine/target/
+*.class
+*.jar
+*.war
+
+# IDE
+.trae/
+
+# 日志
+*.log
+rag-engine/logs/
