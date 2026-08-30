@@ -29,6 +29,20 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * 知识库文档管理服务
+ *
+ * 核心职责：文档的全生命周期管理，包括上传、解析、切片、向量化、索引、检索、删除。
+ * 整个处理管线如下：
+ *   1. 文档上传 → Apache Tika 提取文本
+ *   2. 文本切片 → DocumentChunker 父子切片（child=300字, parent=1000字）
+ *   3. 向量化   → EmbeddingService ONNX 本地推理（bge-small-zh, 512维）
+ *   4. 写入向量库 → Qdrant（child + parent 双集合）
+ *   5. 写入全文索引 → Lucene BM25
+ *   6. 持久化到 MySQL（knowledge_document + knowledge_chunk 表）
+ *
+ * 依赖：DocumentChunker, EmbeddingService, VectorStoreService, Bm25Service, AuditLogService
+ */
 @Service
 public class KnowledgeBaseService {
 
@@ -64,6 +78,11 @@ public class KnowledgeBaseService {
         this.auditLogService = auditLogService;
     }
 
+    /**
+     * 上传文档（通用入口）
+     * 流程：Tika 解析文本 → 创建数据库记录 → 切片+向量化+索引 → 标记为 indexed
+     * 注意：此方法不关联知识库，department/category 仅用于分类标记
+     */
     @Transactional
     public DocumentVO uploadDocument(MultipartFile file, String department, String category) {
         String originalFilename = file.getOriginalFilename();
@@ -115,6 +134,10 @@ public class KnowledgeBaseService {
         return toVO(document);
     }
 
+    /**
+     * 文档处理核心管线：切片 → 向量化 → 写入 Qdrant → 写入 BM25
+     * 父子双集合策略：child 用于精确检索，parent 用于提供上下文
+     */
     private void processDocument(KnowledgeDocument document, String content) {
         DocumentChunker.ChunkedDocument chunked = documentChunker.chunk(
                 "doc_" + document.getId(), content
@@ -218,6 +241,9 @@ public class KnowledgeBaseService {
                 .orElse(null);
     }
 
+    /**
+     * 使用 Apache Tika 提取文档文本内容（支持 .pdf / .docx / .txt / .md 等格式）
+     */
     private String extractText(MultipartFile file) throws IOException, TikaException {
         Tika tika = new Tika();
         try (InputStream is = file.getInputStream()) {
@@ -231,6 +257,9 @@ public class KnowledgeBaseService {
         return dot > 0 ? filename.substring(dot + 1).toLowerCase() : "unknown";
     }
 
+    /**
+     * 分页查询文档列表（按 department + category 过滤）
+     */
     public Page<DocumentVO> listDocuments(int pageNum, int pageSize, String department, String category) {
         LambdaQueryWrapper<KnowledgeDocument> wrapper = new LambdaQueryWrapper<>();
         if (department != null && !department.isBlank()) {
@@ -251,6 +280,9 @@ public class KnowledgeBaseService {
         return voPage;
     }
 
+    /**
+     * 删除文档（含向量库、BM25索引、数据库记录）
+     */
     @Transactional
     public void deleteDocument(String documentId) {
         Long docId = Long.parseLong(documentId);
@@ -314,6 +346,9 @@ public class KnowledgeBaseService {
         return chunkMapper.selectOne(wrapper);
     }
 
+    /**
+     * 更新分块内容，并重新向量化 + 重新索引 BM25
+     */
     @Transactional
     public void updateChunk(String chunkId, String newContent) {
         KnowledgeChunk chunk = getChunkByChunkId(chunkId);
@@ -366,6 +401,9 @@ public class KnowledgeBaseService {
         log.info("分块已更新: chunkId={}, documentId={}", chunkId, chunk.getDocumentId());
     }
 
+    /**
+     * 按知识库ID分页查询文档（支持 keyword/status/fileType 过滤，并关联知识库名称）
+     */
     public IPage<DocumentVO> listDocuments(Long kbId, int pageNum, int pageSize, String keyword, String status, String fileType) {
         LambdaQueryWrapper<KnowledgeDocument> wrapper = new LambdaQueryWrapper<>();
         if (kbId != null) {
@@ -403,6 +441,9 @@ public class KnowledgeBaseService {
         return voPage;
     }
 
+    /**
+     * 上传文档到指定知识库（含切片+向量化+索引，状态: PARSING → READY/FAILED）
+     */
     @Transactional
     public DocumentVO uploadDocumentToKb(Long kbId, MultipartFile file, String tags) {
         String originalFilename = file.getOriginalFilename();
@@ -446,6 +487,9 @@ public class KnowledgeBaseService {
         return toVO(document);
     }
 
+    /**
+     * 批量上传文档到知识库，统计成功数量
+     */
     @Transactional
     public int batchUploadDocuments(Long kbId, List<MultipartFile> files) {
         int successCount = 0;
@@ -460,6 +504,9 @@ public class KnowledgeBaseService {
         return successCount;
     }
 
+    /**
+     * 手动录入文档（直接输入文本内容，不使用文件上传）
+     */
     @Transactional
     public DocumentVO createManualDocument(Long kbId, DocumentManualRequest request) {
         KnowledgeDocument document = new KnowledgeDocument();
@@ -488,6 +535,9 @@ public class KnowledgeBaseService {
         return toVO(document);
     }
 
+    /**
+     * 更新文档元信息（fileName / category）
+     */
     @Transactional
     public DocumentVO updateDocument(String docId, Map<String, Object> body) {
         KnowledgeDocument document = documentMapper.selectById(Long.parseLong(docId));
@@ -505,6 +555,9 @@ public class KnowledgeBaseService {
         return toVO(document);
     }
 
+    /**
+     * 重新解析文档：删除旧切片/向量/BM25索引，用原始内容重新进行切片→向量化→索引
+     */
     @Transactional
     public void reparseDocument(String docId) {
         Long docIdLong = Long.parseLong(docId);
@@ -548,6 +601,9 @@ public class KnowledgeBaseService {
                 docId, document.getFileName(), "重新解析完成", "SUCCESS");
     }
 
+    /**
+     * 恢复已删除的文档（软删除 → 恢复）
+     */
     @Transactional
     public void restoreDocument(String docId) {
         KnowledgeDocument document = new KnowledgeDocument();

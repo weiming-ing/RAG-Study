@@ -58,6 +58,29 @@ AGENT_SYSTEM_PROMPT = """你是一个智能全能助手，负责闲聊对话和�
 
 
 class AgentService:
+    """
+    Agent 核心服务（ReAct 模式）
+
+    核心职责：实现 ReAct（Reasoning + Acting）循环，让 LLM 自主调用工具完成任务。
+
+    工作流程：
+      1. 构建 messages（system prompt + 历史 + 用户问题）
+      2. LLM 生成响应（可能是文本回复或工具调用请求）
+      3. 如果 LLM 请求调用工具 → 执行工具 → 将结果追加到 messages → 回到步骤 2
+      4. 如果 LLM 直接回复文本 → 结束循环，返回答案
+      5. 最大迭代次数限制（AGENT_MAX_ITERATIONS），防止无限循环
+
+    可用工具（通过 tool_registry 注册）：
+      - file_list: 列出知识库文档
+      - file_read: 读取文档全文
+      - search_knowledge: 语义搜索知识库
+      - web_search: 互联网搜索
+      - code_execute: 执行 Python 代码
+      - image_generate / image_analyze: 图片处理
+      - http_request: HTTP 请求
+      - get_session_history: 获取对话历史
+    """
+
     def __init__(self):
         self.client = deepseek_client
         self.max_iterations = AGENT_MAX_ITERATIONS

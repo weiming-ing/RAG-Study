@@ -17,13 +17,26 @@ INTENT_PROMPT = """分析用户意图，严格从以下三类中选择一个：
 
 
 class IntentService:
-    """意图识别与路由分发服务"""
+    """
+    意图识别与路由分发服务
+
+    核心职责：分析用户输入，分类为三类意图之一，决定后续处理流程。
+
+    意图类型：
+      - chat: 闲聊（打招呼、感谢、情感交流等）→ 直接回复，不检索知识库
+      - knowledge: 知识问答（询问流程、制度、规定等）→ 走 RAG 检索管线
+      - action: 操作执行（统计、导出、文档列表等）→ 走 Agent 工具调用
+
+    分类策略：
+      - _quick_classify(): 基于规则快速匹配（前缀匹配、关键词匹配、长度判断），命中则跳过 LLM
+      - _llm_classify(): 使用 LLM 做精确分类（仅规则未命中时调用）
+    """
 
     def __init__(self):
         self._enabled = ENABLE_INTENT_ROUTING
 
     async def classify(self, query: str, history: List[dict] = None) -> str:
-        """分类用户意图 → chat / knowledge / action"""
+        """分类用户意图 → chat / knowledge / action（先规则快速匹配，未命中则 LLM 分类）"""
         if not self._enabled:
             return "knowledge"
 

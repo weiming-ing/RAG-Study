@@ -18,6 +18,22 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
+/**
+ * 解析任务管理服务
+ *
+ * 核心职责：管理文档解析任务的生命周期（PENDING → RUNNING → SUCCESS/FAILED）。
+ *
+ * 任务状态机：
+ *   PENDING → RUNNING → SUCCESS（完成） / FAILED（失败）
+ *
+ * 主要操作：
+ *   - createTask: 创建解析任务（状态 PENDING，最多重试 3 次）
+ *   - startTask: 开始执行（状态 RUNNING）
+ *   - completeTask: 标记完成（状态 SUCCESS，进度 100%）
+ *   - failTask: 标记失败（状态 FAILED，记录错误信息）
+ *   - updateProgress: 更新任务进度（0-100）
+ *   - listTasks / getTasksByDocumentId: 查询任务列表
+ */
 @Service
 public class ParseTaskService {
 
@@ -49,6 +65,9 @@ public class ParseTaskService {
     }
 
     @Transactional
+    /**
+     * 创建解析任务（状态 PENDING，最多重试 3 次）
+     */
     public ParseTask createTask(String documentId, String taskType) {
         ParseTask task = new ParseTask();
         task.setDocumentId(documentId);

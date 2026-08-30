@@ -27,6 +27,19 @@ import java.util.Map;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+/**
+ * BM25 全文索引服务实现（Apache Lucene）
+ *
+ * 核心职责：基于 Lucene 实现 BM25 关键词检索，作为向量检索的互补。
+ *
+ * 关键技术：
+ *   - 分词器：SmartChineseAnalyzer（中文智能分词）
+ *   - 并发控制：ReadWriteLock（写锁保护索引写入，读锁允许并发检索）
+ *   - 索引字段：chunkId（主键）、content（索引+存储）、parentContent/docName/department（仅存储）
+ *   - 分数归一化：score / maxScore 映射到 [0, 1] 区间
+ *
+ * 存储位置：本地文件系统（bm25_index/），通过 RagConfig 配置索引路径
+ */
 @Service
 public class Bm25ServiceImpl implements Bm25Service {
 
@@ -100,6 +113,10 @@ public class Bm25ServiceImpl implements Bm25Service {
         }
     }
 
+    /**
+     * BM25 检索：使用 SmartChineseAnalyzer 中文分词，MultiFieldQueryParser 多字段查询
+     * 返回结果分数归一化到 [0, 1] 区间
+     */
     @Override
     public List<SearchResultVO> search(String query, int topK) {
         lock.readLock().lock();

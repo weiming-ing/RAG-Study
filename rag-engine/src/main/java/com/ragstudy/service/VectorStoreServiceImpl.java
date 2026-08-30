@@ -25,6 +25,19 @@ import static io.qdrant.client.ValueFactory.value;
 import static io.qdrant.client.VectorsFactory.vectors;
 import static io.qdrant.client.ConditionFactory.matchKeyword;
 
+/**
+ * 向量存储服务实现（Qdrant）
+ *
+ * 核心职责：封装 Qdrant gRPC 客户端，提供向量存储和检索能力。
+ *
+ * 关键操作：
+ *   - ensureCollection: 确保集合存在（自动创建，余弦距离）
+ *   - upsert / upsertBatch: 写入/批量写入向量（含 payload 元数据）
+ *   - search: 向量检索（最近邻查询，支持过滤条件）
+ *   - deleteById: 删除指定向量
+ *
+ * 降级策略：Qdrant 不可用时 available=false，所有操作安全降级（返回空结果/跳过写入）
+ */
 @Service
 public class VectorStoreServiceImpl implements VectorStoreService {
 
@@ -65,42 +78,60 @@ public class VectorStoreServiceImpl implements VectorStoreService {
 
     @Override
     public void upsertBatch(String collectionName, List<VectorEntry> entries) {
+        // 降级处理：如果向量数据库不可用，直接返回
         if (!available) {
             log.warn("向量数据库服务不可用，跳过 {} 条向量入库", entries.size());
             return;
         }
 
         try {
+            // 存储转换后的Qdrant点数据
             List<PointStruct> points = new ArrayList<>();
+
+            // 遍历所有向量条目，转换为Qdrant PointStruct格式
             for (VectorEntry entry : entries) {
+                // 构建Qdrant点：将字符串ID通过MD5转换为UUID，设置向量数据
                 PointStruct.Builder builder = PointStruct.newBuilder()
                         .setId(id(UUID.nameUUIDFromBytes(entry.id().getBytes())))
                         .setVectors(vectors(entry.vector()));
 
+                // 如果存在元数据payload，转换为Qdrant要求的格式并添加到点中
                 if (entry.payload() != null && !entry.payload().isEmpty()) {
                     Map<String, io.qdrant.client.grpc.JsonWithInt.Value> grpcPayload = new HashMap<>();
+
+                    // 遍历每个payload字段，根据数据类型转换为gRPC Value
                     for (Map.Entry<String, Object> kv : entry.payload().entrySet()) {
+                        // 字符串类型转换
                         if (kv.getValue() instanceof String s) {
                             grpcPayload.put(kv.getKey(), value(s));
-                        } else if (kv.getValue() instanceof Number n) {
+                        }
+                        // 数字类型转换（统一转为long）
+                        else if (kv.getValue() instanceof Number n) {
                             grpcPayload.put(kv.getKey(), value(n.longValue()));
-                        } else if (kv.getValue() instanceof Boolean b) {
+                        }
+                        // 布尔类型转换
+                        else if (kv.getValue() instanceof Boolean b) {
                             grpcPayload.put(kv.getKey(), value(b));
                         }
+                        // 不支持的类型会被忽略
                     }
+
+                    // 将转换后的payload添加到点构建器
                     builder.putAllPayload(grpcPayload);
                 }
 
+                // 构建完成，添加到列表
                 points.add(builder.build());
             }
 
+            // 异步批量写入Qdrant，阻塞等待完成
             client.upsertAsync(collectionName, points).get();
             log.debug("批量向量入库成功: collection={}, count={}", collectionName, entries.size());
         } catch (Exception e) {
+            // 捕获所有异常，记录错误日志，不抛出异常保证服务可用性
             log.error("向量入库失败: collection={}, count={}", collectionName, entries.size(), e);
         }
     }
-
     @Override
     public List<SearchResultVO> search(String collectionName, float[] queryVector,
                                         int topK, Map<String, String> filters) {

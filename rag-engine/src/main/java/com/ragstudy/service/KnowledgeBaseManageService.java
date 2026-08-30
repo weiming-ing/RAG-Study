@@ -24,6 +24,23 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
+/**
+ * 知识库管理服务
+ *
+ * 核心职责：知识库的CRUD管理 + 权限控制（RBAC）。
+ *
+ * 主要功能：
+ *   - listKbs: 分页查询知识库（权限过滤：仅公开/自己拥有/有权限访问）
+ *   - createKb: 创建知识库 → 初始配置默认检索参数 → 创建所有者权限
+ *   - updateKb / updateKbConfig: 更新知识库基本信息和检索配置
+ *   - grantAccess / revokeAccess: 授权/撤销用户访问权限
+ *   - getAuthorizedUsers: 获取已授权用户列表
+ *
+ * 权限模型：
+ *   - PUBLIC: 所有人可访问
+ *   - PRIVATE: 仅授权用户可访问
+ *   - 权限级别: ADMIN / EDIT / READ
+ */
 @Service
 public class KnowledgeBaseManageService {
 
@@ -90,6 +107,9 @@ public class KnowledgeBaseManageService {
         return vo;
     }
 
+    /**
+     * 创建知识库：持久化知识库记录 → 设置默认检索配置 → 分配 OWNER 权限给创建者
+     */
     @Transactional
     public KbKnowledgeBaseVO createKb(KbCreateRequest request) {
         Long userId = SecurityUtils.getCurrentUserId();

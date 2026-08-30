@@ -10,6 +10,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 知识检索服务（检索入口门面）
+ *
+ * 核心职责：作为检索的统一入口，协调 HybridSearchService 和 MultiHopService，
+ * 根据参数决定使用单次混合检索还是多跳检索。
+ */
 @Service
 public class KnowledgeSearchService {
 

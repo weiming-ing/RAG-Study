@@ -1,3 +1,23 @@
+"""
+代理路由模块 — 请求转发到 Java 管理后端
+
+核心职责：将管理类 API 请求透明转发到 Java 后端（rag-engine :8002），
+同时透传 JWT 认证头，保证前端只需与 Python 后端通信。
+
+代理路径映射：
+  /api/admin/*      → Java /api/admin/*
+  /api/system/*     → Java /api/system/*
+  /api/security/*   → Java /api/security/*
+  /api/debug/*      → Java /api/debug/*
+  /api/api-keys/*   → Java /api/api-keys/*
+  /api/dashboard/*  → Java /api/dashboard/*
+
+设计原因：
+  - 前端（rag-admin :5173）只需配置一个后端地址（Python :8001）
+  - Python 后端负责 AI 对话核心逻辑，管理数据通过代理转发到 Java
+  - 认证信息通过 JWT Bearer Token 透传
+"""
+
 import os
 import httpx
 from fastapi import APIRouter, Request, HTTPException

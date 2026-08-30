@@ -19,6 +19,20 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 
+/**
+ * 文本向量化服务实现（ONNX Runtime 本地推理）
+ *
+ * 核心职责：将文本转换为 512 维语义向量，使用 bge-small-zh 模型。
+ *
+ * 技术栈：
+ *   - 推理引擎：ONNX Runtime（本地 CPU 推理，无需 GPU）
+ *   - 模型：bge-small-zh（512 维中文语义向量模型）
+ *   - 分词器：HuggingFace Tokenizer（DJL 封装）
+ *   - 池化策略：Mean Pooling（对 attention_mask 有效位置取平均）
+ *   - 输出后处理：L2 归一化（使向量模长为 1）
+ *
+ * 降级策略：模型未初始化时使用随机归一化向量，保证系统不崩溃
+ */
 @Service
 public class EmbeddingServiceImpl implements EmbeddingService {
 
@@ -99,18 +113,25 @@ public class EmbeddingServiceImpl implements EmbeddingService {
             return texts.stream().map(t -> generateFallbackVector()).collect(java.util.stream.Collectors.toList());
         }
 
-        List<float[]> results = new ArrayList<>();
-        for (String text : texts) {
-            try {
-                results.add(doEmbed(text));
-            } catch (Exception e) {
-                log.error("批量向量化失败: text={}", text.substring(0, Math.min(50, text.length())), e);
-                results.add(new float[ragConfig.getEmbedding().getDimension()]);
-            }
+        if (texts.isEmpty()) {
+            return List.of();
         }
-        return results;
+
+        try {
+            return doEmbedBatch(texts);
+        } catch (Exception e) {
+            log.error("批量向量化失败: count={}, error={}", texts.size(), e.getMessage(), e);
+            List<float[]> fallback = new ArrayList<>();
+            for (String text : texts) {
+                fallback.add(new float[ragConfig.getEmbedding().getDimension()]);
+            }
+            return fallback;
+        }
     }
 
+    /**
+     * ONNX 模型推理：tokenize → 构建输入张量 → 推理 → Mean Pooling → L2 归一化
+     */
     private float[] doEmbed(String text) throws OrtException {
         ai.djl.huggingface.tokenizers.Encoding encoding = tokenizer.encode(text);
         long[] inputIds = encoding.getIds();
@@ -140,6 +161,122 @@ public class EmbeddingServiceImpl implements EmbeddingService {
         }
     }
 
+    /**
+     * 批量 ONNX 推理：将所有文本填充到相同长度，一次 session.run 完成批量推理
+     */
+    private List<float[]> doEmbedBatch(List<String> texts) throws OrtException {
+        int batchSize = texts.size();
+        int dimension = ragConfig.getEmbedding().getDimension();
+
+        ai.djl.huggingface.tokenizers.Encoding[] encodings = new ai.djl.huggingface.tokenizers.Encoding[batchSize];
+        int maxSeqLen = 0;
+        for (int i = 0; i < batchSize; i++) {
+            encodings[i] = tokenizer.encode(texts.get(i));
+            maxSeqLen = Math.max(maxSeqLen, encodings[i].getIds().length);
+        }
+
+        long[] flatInputIds = new long[batchSize * maxSeqLen];
+        long[] flatAttentionMask = new long[batchSize * maxSeqLen];
+        long[] flatTokenTypeIds = new long[batchSize * maxSeqLen];
+
+        long[][] attentionMasks = new long[batchSize][maxSeqLen];
+
+        for (int i = 0; i < batchSize; i++) {
+            ai.djl.huggingface.tokenizers.Encoding enc = encodings[i];
+            long[] ids = enc.getIds();
+            long[] mask = enc.getAttentionMask();
+            long[] typeIds = enc.getTypeIds();
+
+            int offset = i * maxSeqLen;
+            for (int j = 0; j < ids.length; j++) {
+                flatInputIds[offset + j] = ids[j];
+                flatAttentionMask[offset + j] = mask[j];
+                flatTokenTypeIds[offset + j] = typeIds[j];
+                attentionMasks[i][j] = mask[j];
+            }
+        }
+
+        long[] shape = {batchSize, maxSeqLen};
+
+        Map<String, OnnxTensor> inputs = new HashMap<>();
+        inputs.put("input_ids", OnnxTensor.createTensor(env, LongBuffer.wrap(flatInputIds), shape));
+        inputs.put("attention_mask", OnnxTensor.createTensor(env, LongBuffer.wrap(flatAttentionMask), shape));
+        inputs.put("token_type_ids", OnnxTensor.createTensor(env, LongBuffer.wrap(flatTokenTypeIds), shape));
+
+        OrtSession.Result result = session.run(inputs);
+
+        String outputName = session.getOutputNames().iterator().next();
+        OnnxTensor outputTensor = (OnnxTensor) result.get(outputName).get();
+
+        long[] outputShape = outputTensor.getInfo().getShape();
+        if (outputShape.length == 3) {
+            return batchMeanPooling(outputTensor, batchSize, maxSeqLen, attentionMasks);
+        } else if (outputShape.length == 2) {
+            return batchExtractVectors(outputTensor, batchSize, dimension);
+        } else {
+            throw new RuntimeException("不支持的输出形状: " + Arrays.toString(outputShape));
+        }
+    }
+
+    /**
+     * 批量 Mean Pooling：对每个样本的 attention_mask=1 位置取平均，然后 L2 归一化
+     */
+    private List<float[]> batchMeanPooling(OnnxTensor outputTensor, int batchSize, int maxSeqLen, long[][] attentionMasks) throws OrtException {
+        long[] shape = outputTensor.getInfo().getShape();
+        int hiddenSize = (int) shape[2];
+        FloatBuffer buffer = outputTensor.getFloatBuffer();
+
+        List<float[]> result = new ArrayList<>(batchSize);
+        for (int b = 0; b < batchSize; b++) {
+            float[] pooled = new float[hiddenSize];
+            for (int j = 0; j < hiddenSize; j++) {
+                float sum = 0f;
+                int count = 0;
+                for (int i = 0; i < maxSeqLen; i++) {
+                    if (attentionMasks[b][i] == 1) {
+                        sum += buffer.get(b * maxSeqLen * hiddenSize + i * hiddenSize + j);
+                        count++;
+                    }
+                }
+                pooled[j] = count > 0 ? sum / count : 0f;
+            }
+            result.add(l2Normalize(pooled));
+        }
+        return result;
+    }
+
+    /**
+     * 批量提取向量（2D 输出）：直接取每个样本的向量并 L2 归一化
+     */
+    private List<float[]> batchExtractVectors(OnnxTensor outputTensor, int batchSize, int dimension) throws OrtException {
+        FloatBuffer buffer = outputTensor.getFloatBuffer();
+        List<float[]> result = new ArrayList<>(batchSize);
+        for (int b = 0; b < batchSize; b++) {
+            float[] vector = new float[dimension];
+            buffer.position(b * dimension);
+            buffer.get(vector);
+            result.add(l2Normalize(vector));
+        }
+        return result;
+    }
+
+    private float[] l2Normalize(float[] vector) {
+        float norm = 0f;
+        for (float v : vector) {
+            norm += v * v;
+        }
+        norm = (float) Math.sqrt(norm);
+        if (norm > 0) {
+            for (int i = 0; i < vector.length; i++) {
+                vector[i] /= norm;
+            }
+        }
+        return vector;
+    }
+
+    /**
+     * Mean Pooling：对 attention_mask=1 的位置取平均，生成句子级向量，然后 L2 归一化
+     */
     private float[] meanPooling(OnnxTensor outputTensor, int seqLength, long[] attentionMask) throws OrtException {
         long[] shape = outputTensor.getInfo().getShape();
         int hiddenSize = (int) shape[2];

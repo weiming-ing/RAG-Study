@@ -19,10 +19,27 @@ JAVA_TIMEOUT = 15.0
 
 
 class RAGService:
+    """
+    RAG 核心检索服务
+
+    核心职责：统一的检索入口，优先级为 Java 后端 > 本地 ChromaDB 降级。
+
+    检索管线：
+      1. 查询到达 → _check_java_backend() 检测 Java 后端健康状态
+      2. 如果 Java 可用 → _java_search() 调用 Java 混合检索（向量 + BM25）
+      3. 如果 Java 不可用 → _local_search() 降级到本地 ChromaDB 向量检索
+      4. build_context() 将检索结果拼接为 LLM prompt 上下文
+
+    依赖：
+      - Java 后端 HybridSearchService（/api/internal/search）
+      - 本地 ChromaDB + sentence-transformers（降级方案）
+    """
+
     def __init__(self):
         self._java_available = None
 
     async def _check_java_backend(self) -> bool:
+        """检测 Java 后端是否可用（缓存结果，避免重复请求）"""
         if self._java_available is not None:
             return self._java_available
         try:
@@ -36,6 +53,7 @@ class RAGService:
     async def _java_search(
         self, query: str, top_k: int, use_hybrid: bool, threshold: float
     ) -> List[dict]:
+        """调用 Java 后端混合检索接口，过滤低于阈值的低分结果"""
         try:
             async with httpx.AsyncClient(timeout=JAVA_TIMEOUT) as client:
                 resp = await client.post(
@@ -78,6 +96,7 @@ class RAGService:
     def _local_search(
         self, query: str, top_k: int, threshold: float
     ) -> List[dict]:
+        """本地 ChromaDB 降级检索：使用 sentence-transformers 向量化后做余弦相似度查询"""
         import chromadb
         from sentence_transformers import SentenceTransformer
 
@@ -127,6 +146,7 @@ class RAGService:
         return sources
 
     def build_context(self, sources: List[dict]) -> str:
+        """将检索结果拼接为 LLM 上下文：按 [来源N] 格式组织，标注文档名和相关度"""
         if not sources:
             return ""
 
@@ -147,6 +167,7 @@ class RAGService:
         use_hybrid: bool = None,
         threshold: float = None,
     ) -> List[dict]:
+        """统一检索入口：优先 Java 后端 → 降级本地 ChromaDB"""
         if top_k is None:
             top_k = TOP_K
         if use_hybrid is None:

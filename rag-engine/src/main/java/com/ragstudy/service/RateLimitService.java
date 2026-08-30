@@ -12,6 +12,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * 限流服务
+ *
+ * 核心职责：基于令牌桶算法的 API 限流控制。
+ *
+ * 限流维度：
+ *   - targetType: USER / IP / API_KEY / ENDPOINT
+ *   - targetValue: 具体的目标值（如用户ID、IP地址）
+ *   - limitCount + windowSeconds: 在时间窗口内允许的最大请求数
+ *
+ * 算法：内存令牌桶（TokenBucket）
+ *   - 每个规则独立维护一个桶，以 ConcurrentHashMap 存储
+ *   - 桶容量 = limitCount，按 windowSeconds 时间窗口均匀补充
+ *   - 请求到达时 tryAcquire()，令牌不足则返回 false（触发限流）
+ */
 @Service
 public class RateLimitService {
 
@@ -42,6 +57,10 @@ public class RateLimitService {
         ruleMapper.deleteById(id);
     }
 
+    /**
+     * 检查限流：遍历所有启用规则，匹配 targetType + targetValue，使用令牌桶判断
+     * 任一规则触发限流即返回 false
+     */
     public boolean checkLimit(String targetType, String targetValue, String apiPath) {
         LambdaQueryWrapper<RateLimitRule> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(RateLimitRule::getTargetType, targetType)
@@ -62,6 +81,10 @@ public class RateLimitService {
         return true;
     }
 
+    /**
+     * 令牌桶实现：固定容量 + 固定时间窗口补充
+     * tryAcquire() 先补充令牌，再尝试消费，保证线程安全
+     */
     private static class TokenBucket {
         private final int capacity;
         private final int windowSeconds;

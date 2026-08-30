@@ -7,6 +7,19 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 
+/**
+ * 重排序服务
+ *
+ * 核心职责：对混合检索结果进行二次排序，提升检索精度。
+ *
+ * 重排序算法：
+ *   1. 对每个候选结果的 content 做向量化
+ *   2. 计算 query 向量与 content 向量的余弦相似度
+ *   3. 综合分数 = 0.6 * 语义相似度 + 0.4 * 原始检索分数
+ *   4. 按综合分数降序排列，截取 Top-K
+ *
+ * 效果：语义相似度（embedding cosine）权重更高，能有效过滤检索噪声
+ */
 @Service
 public class RerankerService {
 
@@ -18,6 +31,10 @@ public class RerankerService {
         this.embeddingService = embeddingService;
     }
 
+    /**
+     * 重排序主方法：批量计算 query 与候选内容的余弦相似度 → 综合评分 → 排序 → Top-K
+     * 综合分数 = 0.6 * 语义相似度 + 0.4 * 原始检索分数
+     */
     public List<SearchResultVO> rerank(String query, List<SearchResultVO> candidates, int topK) {
         if (candidates == null || candidates.isEmpty()) {
             return List.of();
@@ -25,22 +42,36 @@ public class RerankerService {
 
         log.info("重排序: query={}, candidates={}, topK={}", query, candidates.size(), topK);
 
-        float[] queryVector = embeddingService.embed(query);
-
-        List<ScoredCandidate> scored = new ArrayList<>();
+        List<String> contents = new ArrayList<>();
+        List<SearchResultVO> validCandidates = new ArrayList<>();
         for (SearchResultVO candidate : candidates) {
             String content = getContent(candidate);
-            if (content == null || content.isBlank()) {
-                continue;
+            if (content != null && !content.isBlank()) {
+                contents.add(content);
+                validCandidates.add(candidate);
             }
+        }
 
-            float[] contentVector = embeddingService.embed(content);
+        if (contents.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> allTexts = new ArrayList<>();
+        allTexts.add(query);
+        allTexts.addAll(contents);
+
+        List<float[]> allVectors = embeddingService.embedBatch(allTexts);
+        float[] queryVector = allVectors.get(0);
+
+        List<ScoredCandidate> scored = new ArrayList<>();
+        for (int i = 0; i < validCandidates.size(); i++) {
+            float[] contentVector = allVectors.get(i + 1);
             float similarity = cosineSimilarity(queryVector, contentVector);
 
             ScoredCandidate sc = new ScoredCandidate();
-            sc.result = candidate;
+            sc.result = validCandidates.get(i);
             sc.similarity = similarity;
-            sc.combinedScore = 0.6 * similarity + 0.4 * candidate.getScore();
+            sc.combinedScore = 0.6 * similarity + 0.4 * validCandidates.get(i).getScore();
             scored.add(sc);
         }
 

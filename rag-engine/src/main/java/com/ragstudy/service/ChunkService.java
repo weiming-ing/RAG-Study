@@ -17,6 +17,20 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * 切片管理服务
+ *
+ * 核心职责：文档切片的CRUD管理，包括切片查看、更新、分割、合并、删除、向量化重建。
+ *
+ * 主要操作：
+ *   - listChunks: 分页查询切片（支持 documentId + keyword 过滤）
+ *   - updateChunkContent: 更新切片内容 → 重新向量化 + 重建 BM25 索引
+ *   - splitChunk: 在指定位置分割切片为两个独立切片
+ *   - mergeChunks: 合并两个同文档切片为一个
+ *   - deleteChunkVector: 删除切片（含向量 + BM25 + 数据库记录）
+ *   - rebuildKbVectors: 重建整个知识库的向量索引
+ *   - getVectorSyncStatus: 查询向量同步状态
+ */
 @Service
 public class ChunkService {
 
@@ -88,6 +102,9 @@ public class ChunkService {
         log.info("切片已更新并重新向量化: chunkId={}", chunkId);
     }
 
+    /**
+     * 分割切片：在指定位置将切片一分为二，两个新切片各自重新向量化 + 重建 BM25 索引
+     */
     @Transactional
     public KnowledgeChunk splitChunk(String chunkId, int splitPosition) {
         KnowledgeChunk chunk = getChunkByChunkId(chunkId);
@@ -136,6 +153,9 @@ public class ChunkService {
         return newChunk;
     }
 
+    /**
+     * 合并切片：将两个同文档切片合并为一个，合并后重新向量化 + 重建 BM25 索引
+     */
     @Transactional
     public KnowledgeChunk mergeChunks(String chunkId1, String chunkId2) {
         KnowledgeChunk chunk1 = getChunkByChunkId(chunkId1);

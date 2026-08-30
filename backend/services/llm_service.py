@@ -39,12 +39,26 @@ CHAT_SYSTEM_PROMPT = """你是一个友好、热心的AI助手。你可以自由
 
 
 class LLMService:
+    """
+    LLM 调用服务
+
+    核心职责：封装 DeepSeek API 调用，构建 prompt，管理流式输出。
+
+    关键设计：
+      - _build_messages(): 构建 system + history + context + question 的完整 prompt
+      - generate(): 流式输出（AsyncGenerator），逐 token 返回给前端
+      - 支持两种 System Prompt 切换：KNOWLEDGE_SYSTEM_PROMPT（知识问答）和 CHAT_SYSTEM_PROMPT（闲聊）
+
+    依赖：utils/http_client.py 中的 deepseek_client（httpx 异步 HTTP 客户端）
+    """
+
     def __init__(self):
         self.client = deepseek_client
 
     def _build_messages(
         self, query: str, context: str, history: List[dict], system_prompt: str = None
     ) -> List[dict]:
+        """构建 LLM 消息列表：system prompt → 最近6轮历史 → 参考资料 + 用户问题"""
         if system_prompt is None:
             system_prompt = KNOWLEDGE_SYSTEM_PROMPT
         messages = [{"role": "system", "content": system_prompt}]
@@ -65,6 +79,7 @@ class LLMService:
     async def generate(
         self, query: str, context: str, history: List[dict], system_prompt: str = None
     ) -> AsyncGenerator[str, None]:
+        """流式生成：构建 prompt → 调用 DeepSeek API → 逐 token 返回"""
         messages = self._build_messages(query, context, history, system_prompt)
         async for token in self.client.chat_completion_stream(
             messages=messages,

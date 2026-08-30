@@ -19,6 +19,27 @@ async def check_redis():
 
 
 class SessionService:
+    """
+    会话管理服务
+
+    核心职责：管理对话会话的生命周期，支持 Redis + SQLite 双写存储。
+
+    存储策略：
+      - 优先 Redis：高性能缓存，TTL=7天，适合生产环境
+      - 降级 SQLite：Redis 不可用时自动切换，保证单机可用
+
+    数据模型：
+      - sessions: 会话元数据（id, title, user_id, created_at, updated_at）
+      - messages: 消息记录（session_id, role, content, sources, created_at）
+
+    主要操作：
+      - create_session: 创建新会话（UUID 16位 hex）
+      - get_sessions: 按用户获取会话列表（Redis: SET + HGETALL, SQLite: LEFT JOIN GROUP BY）
+      - get_history: 获取会话历史消息（Redis: LRANGE, SQLite: SELECT）
+      - add_message: 添加消息（user/assistant），更新会话时间
+      - update_title: 自动更新标题（仅首次从"新对话"改为用户首条消息）
+      - delete_session: 删除会话及关联消息
+    """
 
     async def _redis(self):
         return await get_redis()

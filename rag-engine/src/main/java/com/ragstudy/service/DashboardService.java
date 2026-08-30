@@ -12,6 +12,21 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 
+/**
+ * 仪表盘统计服务
+ *
+ * 核心职责：管理后台仪表盘的数据聚合与统计。
+ *
+ * 统计维度：
+ *   - 概览：文档数、切片数、知识库数、用户数、活跃告警数
+ *   - API 调用：接口调用趋势、热门接口排行
+ *   - Token 用量：每日 Token 消耗趋势、知识库消耗排行
+ *   - 文档热度：热门文档排行、知识库热度排行
+ *   - 任务监控：解析任务状态统计、任务类型分布
+ *   - 系统告警：活跃告警列表、告警解决
+ *
+ * 异步记录：recordApiCall / recordDocHit / recordTokenUsage 使用 @Async 异步写入统计表
+ */
 @Service
 public class DashboardService {
 
@@ -136,6 +151,9 @@ public class DashboardService {
         }
     }
 
+    /**
+     * 异步记录 API 调用统计（从请求上下文提取 apiPath/kbId/userId）
+     */
     @Async
     public void recordApiCall(String kbId, String apiPath, boolean success, double latencyMs) {
         try {
@@ -171,6 +189,9 @@ public class DashboardService {
         }
     }
 
+    /**
+     * 异步记录文档热度统计（检索命中时调用，记录引用次数）
+     */
     @Async
     public void recordDocHit(String documentId, String docName, String kbId) {
         try {
@@ -199,6 +220,9 @@ public class DashboardService {
         }
     }
 
+    /**
+     * 异步记录 Token 用量统计（LLM 调用完成后，记录 prompt + completion tokens）
+     */
     @Async
     public void recordTokenUsage(String kbId, Long userId, Long promptTokens, Long completionTokens) {
         try {

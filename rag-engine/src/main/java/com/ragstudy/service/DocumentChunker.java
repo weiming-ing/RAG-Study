@@ -8,6 +8,21 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * 文档切片服务
+ *
+ * 核心职责：将长文本切分为父子双层切片。
+ *
+ * 父子切片策略：
+ *   - Child Chunk（子切片，默认 300 字）：用于精确检索，overlap=50 保证上下文连贯
+ *   - Parent Chunk（父切片，默认 1000 字）：用于提供更大的上下文窗口
+ *   - 切片边界优先在句号处断开，保证语义完整性
+ *
+ * 数据结构：
+ *   - ChunkResult: 子切片（chunkId, content, chunkIndex, parentChunkId, parentChunkIndex）
+ *   - ParentChunk: 父切片（parentChunkId, content, parentChunkIndex）
+ *   - ChunkedDocument: 完整切片结果（documentId, childChunks, parentChunks）
+ */
 @Service
 public class DocumentChunker {
 
@@ -39,6 +54,11 @@ public class DocumentChunker {
             int parentChunkIndex
     ) {}
 
+    /**
+     * 文档切片主方法：将文本按父子双层策略切分
+     * 外层循环：按 parentSize 切父切片 → 内层循环：按 childSize 切子切片
+     * 边界优先在句号处断开，保证语义完整性
+     */
     public ChunkedDocument chunk(String documentId, String content) {
         int childSize = ragConfig.getChunker().getChildSize();
         int parentSize = ragConfig.getChunker().getParentSize();

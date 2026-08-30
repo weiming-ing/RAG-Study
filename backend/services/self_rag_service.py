@@ -25,7 +25,26 @@ VERIFY_PROMPT = """你是一个事实核查员。请验证以下 AI 生成的回
 
 
 class SelfRAGService:
-    """Self-RAG 反思机制：验证生成的答案是否基于事实"""
+    """
+    Self-RAG 反思验证服务
+
+    核心职责：在 LLM 生成答案后，验证答案是否得到参考资料的事实支持。
+
+    验证流程：
+      1. verify(): 对答案进行事实核查（长度为 <20 字跳过）
+      2. _llm_verify(): 使用 LLM 作为事实核查员，对比答案与参考资料
+      3. _parse_verification(): 解析 LLM 返回的 JSON 验证结果
+      4. build_warning(): 根据验证结果生成用户可见的警告信息
+
+    验证结果：
+      - confidence: 可信度评分（0.0-1.0）
+      - verdict: 判定结果（supported / partially_supported / unsupported）
+      - issues: 发现的问题列表
+
+    警告触发条件：
+      - confidence < 阈值（默认 0.6）：显示"可信度较低"警告
+      - verdict == "partially_supported" 且 confidence < 0.7：显示"部分内容缺乏支持"提醒
+    """
 
     def __init__(self):
         self._enabled = ENABLE_SELF_RAG

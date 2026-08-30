@@ -9,6 +9,21 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * 多跳检索服务
+ *
+ * 核心职责：实现多轮检索（Multi-Hop Retrieval），通过迭代查询提升复杂问题的召回率。
+ *
+ * 检索流程：
+ *   1. 第1轮：混合检索 → 获取初始结果
+ *   2. 重排序：对第1轮结果做语义重排序
+ *   3. 高质过滤：筛选分数 >= multiHopMinScore 的高质量结果
+ *   4. 查询扩展：从高质量结果中提取关键句/短语，构建第2轮查询
+ *   5. 第2轮：用扩展查询再次混合检索 → 合并去重新结果
+ *   6. 最终重排序：对合并结果做最终排序，返回 Top-K
+ *
+ * 适用场景：复杂多面问题、需要多源信息综合回答的场景
+ */
 @Service
 public class MultiHopService {
 
@@ -26,6 +41,9 @@ public class MultiHopService {
         this.ragConfig = ragConfig;
     }
 
+    /**
+     * 多跳检索主方法：第1轮检索 → 重排序 → 高质量过滤 → 查询扩展 → 第2轮检索 → 合并去重 → 最终排序
+     */
     public List<SearchResultVO> multiHopSearch(String query, int topK, Map<String, String> filters) {
         log.info("多轮检索: query={}", query);
 

@@ -22,6 +22,20 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * 对话日志服务
+ *
+ * 核心职责：对话记录的存储、查询、统计和反馈管理。
+ *
+ * 主要功能：
+ *   - saveLog / saveOrUpdateLog: 保存对话记录（每次创建新记录，不覆盖历史）
+ *   - list: 多条件分页查询（支持 kbId/userId/keyword/feedback/日期范围过滤）
+ *   - listGroupedByUser: 按用户分组聚合（管理后台对话列表）
+ *   - getTopKb / getDocRefRank: 知识库/文档引用排行榜
+ *   - getFeedbackStats / getFeedbackDistribution: 反馈统计分析
+ *   - getDailyConversationTrend / getDailyActiveUserTrend: 趋势分析
+ *   - updateFeedback: 更新用户反馈（点赞/点踩/原因/评论）
+ */
 @Service
 public class ConversationLogService {
 
@@ -40,6 +54,9 @@ public class ConversationLogService {
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
     }
 
+    /**
+     * 保存对话记录（每次创建新记录，不覆盖历史）
+     */
     public ConversationLog saveLog(ConversationLog log) {
         log.setCreateTime(LocalDateTime.now());
         if (log.getTotalCount() == null) {
@@ -53,8 +70,7 @@ public class ConversationLogService {
     }
 
     /**
-     * 保存对话记录（每次对话创建一条新记录，不覆盖旧记录）
-     * 管理平台通过 GROUP BY user_id 聚合展示，详情页可查看所有历史记录
+     * 保存或更新对话记录（按 questionHash 判断是否重复，重复则更新答案）
      */
     public ConversationLog saveOrUpdateLog(ConversationLog log) {
         // 每次对话都创建新记录，确保每条历史记录独立可查
@@ -70,6 +86,9 @@ public class ConversationLogService {
         return "{\"q\":\"" + escapeJson(question) + "\",\"a\":\"" + escapeJson(answer) + "\",\"t\":\"" + LocalDateTime.now() + "\"}";
     }
 
+    /**
+     * 多条件分页查询对话记录（支持 kbId/userId/keyword/feedback/日期范围过滤）
+     */
     public IPage<ConversationLog> list(int pageNum, int pageSize, String kbId, Long userId,
                                         String keyword, Integer feedback, String startDate, String endDate) {
         Page<ConversationLog> page = new Page<>(pageNum, pageSize);
@@ -191,6 +210,9 @@ public class ConversationLogService {
         return conversationLogMapper.selectById(id);
     }
 
+    /**
+     * 更新用户反馈（点赞/点踩/原因/评论）
+     */
     public void updateFeedback(Long id, Integer feedback, String reason, String comment) {
         ConversationLog log = conversationLogMapper.selectById(id);
         if (log == null) {

@@ -11,6 +11,19 @@ import org.springframework.util.StringUtils;
 import java.time.LocalDateTime;
 import java.util.List;
 
+/**
+ * 访问控制服务
+ *
+ * 核心职责：基于黑名单/白名单的访问控制，在安全过滤器链中拦截非法请求。
+ *
+ * 控制规则：
+ *   - BLACKLIST: 黑名单，匹配到的 IP/用户/API Key 直接拒绝访问
+ *   - WHITELIST: 白名单，匹配到的 IP 直接放行（绕过其他安全检查）
+ *   - 规则可设置过期时间（expireTime），过期后自动失效
+ *   - 规则可启用/禁用（enabled 字段）
+ *
+ * 调用时机：SecurityCheckFilter 在每次请求前调用 isBlocked() / isWhitelisted()
+ */
 @Service
 public class AccessControlService {
 

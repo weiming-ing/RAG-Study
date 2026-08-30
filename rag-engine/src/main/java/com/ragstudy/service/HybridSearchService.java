@@ -9,6 +9,19 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * 混合检索服务
+ *
+ * 核心职责：编排向量检索（Qdrant）和 BM25 关键词检索（Lucene），加权融合后返回统一结果。
+ *
+ * 检索流程：
+ *   1. 将用户查询向量化 → EmbeddingService.embed()
+ *   2. 向量检索 → Qdrant 余弦相似度检索（权重 0.7）
+ *   3. BM25 检索 → Lucene 中文分词全文检索（权重 0.3）
+ *   4. 加权融合 → 相同 chunk 的分数累加（vectorScore*0.7 + bm25Score*0.3）
+ *   5. 去重     → 基于内容归一化去重（避免重复片段）
+ *   6. 截断 Top-K 返回
+ */
 @Service
 public class HybridSearchService {
 
@@ -27,6 +40,10 @@ public class HybridSearchService {
         this.embeddingService = embeddingService;
     }
 
+    /**
+     * 混合检索主入口：向量检索 + BM25 检索 → 加权融合 → 去重 → Top-K
+     * 每种检索独立 try-catch，单侧失败不影响另一侧
+     */
     public List<SearchResultVO> hybridSearch(String query, int topK, Map<String, String> filters) {
         List<SearchResultVO> vectorResults;
         List<SearchResultVO> bm25Results;
@@ -59,6 +76,10 @@ public class HybridSearchService {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * 加权融合：相同 chunkId 的结果分数累加（vectorScore*weight + bm25Score*weight）
+     * 不同 chunkId 的结果各自保留，最终按加权分数降序排列
+     */
     private List<SearchResultVO> mergeResults(List<SearchResultVO> vectorResults, List<SearchResultVO> bm25Results) {
         double vectorWeight = ragConfig.getRetrieval().getVectorWeight();
         double bm25Weight = ragConfig.getRetrieval().getBm25Weight();
@@ -97,6 +118,9 @@ public class HybridSearchService {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * 内容去重：将内容去除空白符后取前100字符做归一化，相同内容只保留分数最高的
+     */
     private List<SearchResultVO> deduplicate(List<SearchResultVO> results) {
         Set<String> seenContent = new HashSet<>();
         List<SearchResultVO> deduplicated = new ArrayList<>();
