@@ -88,6 +88,7 @@ class RAGService:
                         "score": round(score, 4),
                         "doc_id": metadata.get("documentId", r.get("id", "")),
                         "chunk_index": metadata.get("chunkIndex", metadata.get("parentChunkIndex", 0)),
+                        "chunk_id": r.get("chunkId", metadata.get("chunkId", "")),
                     })
                 return sources
         except Exception:

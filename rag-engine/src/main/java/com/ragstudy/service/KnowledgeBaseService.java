@@ -113,7 +113,7 @@ public class KnowledgeBaseService {
         log.info("文档记录已创建: id={}", document.getId());
 
         try {
-            processDocument(document, content);
+            processDocument(document, content, "");
             document.setStatus("indexed");
         } catch (Exception e) {
             log.error("文档处理失败: id={}", document.getId(), e);
@@ -138,7 +138,7 @@ public class KnowledgeBaseService {
      * 文档处理核心管线：切片 → 向量化 → 写入 Qdrant → 写入 BM25
      * 父子双集合策略：child 用于精确检索，parent 用于提供上下文
      */
-    private void processDocument(KnowledgeDocument document, String content) {
+    private void processDocument(KnowledgeDocument document, String content, String kbName) {
         DocumentChunker.ChunkedDocument chunked = documentChunker.chunk(
                 "doc_" + document.getId(), content
         );
@@ -176,6 +176,7 @@ public class KnowledgeBaseService {
             payload.put("parentChunkIndex", chunk.parentChunkIndex());
             payload.put("docName", document.getFileName());
             payload.put("kbId", document.getKbId());
+            payload.put("kbName", kbName);
             payload.put("department", document.getDepartment());
             payload.put("content", chunk.content());
 
@@ -188,7 +189,7 @@ public class KnowledgeBaseService {
 
             bm25Entries.add(new Bm25Service.IndexEntry(
                     chunk.chunkId(), chunk.content(), parentContent,
-                    document.getFileName(), document.getDepartment()
+                    document.getFileName(), document.getDepartment(), kbName
             ));
         }
 
@@ -214,6 +215,7 @@ public class KnowledgeBaseService {
             payload.put("parentChunkId", pc.parentChunkId());
             payload.put("docName", document.getFileName());
             payload.put("kbId", document.getKbId());
+            payload.put("kbName", kbName);
             payload.put("department", document.getDepartment());
 
             parentVectorEntries.add(new VectorStoreService.VectorEntry(
@@ -260,13 +262,16 @@ public class KnowledgeBaseService {
     /**
      * 分页查询文档列表（按 department + category 过滤）
      */
-    public Page<DocumentVO> listDocuments(int pageNum, int pageSize, String department, String category) {
+    public Page<DocumentVO> listDocuments(int pageNum, int pageSize, String department, String category, String keyword) {
         LambdaQueryWrapper<KnowledgeDocument> wrapper = new LambdaQueryWrapper<>();
         if (department != null && !department.isBlank()) {
             wrapper.eq(KnowledgeDocument::getDepartment, department);
         }
         if (category != null && !category.isBlank()) {
             wrapper.eq(KnowledgeDocument::getCategory, category);
+        }
+        if (StringUtils.hasText(keyword)) {
+            wrapper.and(w -> w.like(KnowledgeDocument::getFileName, keyword));
         }
         wrapper.orderByDesc(KnowledgeDocument::getCreateTime);
 
@@ -471,8 +476,14 @@ public class KnowledgeBaseService {
         document.setStatus("PARSING");
         documentMapper.insert(document);
 
+        String kbName = "";
+        KbKnowledgeBase kb = kbMapper.selectById(kbId);
+        if (kb != null) {
+            kbName = kb.getName();
+        }
+
         try {
-            processDocument(document, content);
+            processDocument(document, content, kbName);
             document.setStatus("READY");
         } catch (Exception e) {
             log.error("文档处理失败: id={}", document.getId(), e);
@@ -519,8 +530,14 @@ public class KnowledgeBaseService {
         document.setStatus("PARSING");
         documentMapper.insert(document);
 
+        String kbName = "";
+        KbKnowledgeBase kb = kbMapper.selectById(kbId);
+        if (kb != null) {
+            kbName = kb.getName();
+        }
+
         try {
-            processDocument(document, request.getContent());
+            processDocument(document, request.getContent(), kbName);
             document.setStatus("READY");
         } catch (Exception e) {
             log.error("手动录入处理失败: id={}", document.getId(), e);
@@ -583,8 +600,14 @@ public class KnowledgeBaseService {
         document.setTotalParentChunks(0);
         documentMapper.updateById(document);
 
+        String kbName = "";
+        KbKnowledgeBase kb = kbMapper.selectById(document.getKbId());
+        if (kb != null) {
+            kbName = kb.getName();
+        }
+
         try {
-            processDocument(document, content);
+            processDocument(document, content, kbName);
             document.setStatus("READY");
         } catch (Exception e) {
             log.error("重新解析失败: id={}", docId, e);

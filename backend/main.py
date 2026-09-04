@@ -1,3 +1,4 @@
+import os
 import traceback
 import asyncio
 from fastapi import FastAPI, Request, HTTPException
@@ -170,4 +171,24 @@ app.mount("/", NoCacheStaticFiles(directory=str(BASE_DIR / "frontend"), html=Tru
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host=HOST, port=PORT, reload=True)
+
+    # 生产模式：通过环境变量 UVICORN_RELOAD=false 禁用 reload
+    # 多实例部署时每个实例独立运行，由 Nginx 负责负载均衡
+    use_reload = os.getenv("UVICORN_RELOAD", "true").lower() == "true"
+    # 生产模式默认使用多 worker（单实例时），多实例场景每个实例 1 个 worker
+    workers = int(os.getenv("UVICORN_WORKERS", "1"))
+
+    log_level = os.getenv("UVICORN_LOG_LEVEL", "info")
+
+    print(f"[启动] 模式={'开发' if use_reload else '生产'}, "
+          f"Host={HOST}, Port={PORT}, Workers={workers}")
+
+    uvicorn.run(
+        "main:app",
+        host=HOST,
+        port=PORT,
+        reload=use_reload,
+        workers=workers if not use_reload else 1,
+        log_level=log_level,
+        access_log=True,
+    )

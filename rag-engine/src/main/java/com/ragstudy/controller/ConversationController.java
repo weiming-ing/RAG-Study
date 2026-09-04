@@ -51,6 +51,11 @@ public class ConversationController {
         return ApiResponse.success(log);
     }
 
+    @GetMapping("/{id}/chunk-trace")
+    public ApiResponse<List<Map<String, Object>>> getChunkTrace(@PathVariable Long id) {
+        return ApiResponse.success(conversationLogService.getConversationChunkTrace(id));
+    }
+
     @PostMapping
     public ApiResponse<ConversationLog> save(@RequestBody ConversationLog log) {
         return ApiResponse.success(conversationLogService.saveLog(log));

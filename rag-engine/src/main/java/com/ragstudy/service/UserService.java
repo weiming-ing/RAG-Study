@@ -157,6 +157,26 @@ public class UserService {
         sysUserRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>().eq(SysUserRole::getUserId, id));
     }
 
+    public List<UserVO> listAllUsers() {
+        List<SysUser> users = sysUserMapper.selectList(
+                new LambdaQueryWrapper<SysUser>().eq(SysUser::getStatus, 1).orderByDesc(SysUser::getCreateTime)
+        );
+        return users.stream().map(user -> {
+            UserVO vo = new UserVO();
+            vo.setId(user.getId());
+            vo.setUsername(user.getUsername());
+            vo.setDisplayName(user.getDisplayName());
+            vo.setEmail(user.getEmail());
+            vo.setPhone(user.getPhone());
+            vo.setAvatar(user.getAvatar());
+            vo.setStatus(user.getStatus());
+            vo.setRoles(sysUserMapper.selectRoleCodesByUserId(user.getId()));
+            vo.setCreateTime(user.getCreateTime());
+            vo.setUpdateTime(user.getUpdateTime());
+            return vo;
+        }).collect(Collectors.toList());
+    }
+
     public List<Long> getUserRoleIds(Long userId) {
         return sysUserRoleMapper.selectRoleIdsByUserId(userId);
     }

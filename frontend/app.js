@@ -984,11 +984,17 @@ async function streamSSEResponse(reader, contentEl, assistantMsg) {
                 const data = JSON.parse(line);
                 if (data.token) {
                     fullText += data.token;
-                    contentEl.textContent = fullText;
+                    contentEl.innerHTML = renderMarkdown(fullText);
                     scrollToBottom();
                 }
-                if (data.done && data.sources) {
-                    renderSources(assistantMsg, data.sources);
+                if (data.done) {
+                    if (data.sources) {
+                        renderSources(assistantMsg, data.sources);
+                    }
+                    // 显示用户反馈按钮（仅登录用户有 conversation_id）
+                    if (data.conversation_id) {
+                        addFeedbackUI(assistantMsg, data.conversation_id);
+                    }
                 }
             } catch (e) {}
         }
@@ -1167,11 +1173,11 @@ async function streamAgentResponse(reader, contentEl, thinkingContainer, assista
                     );
                 } else if (eventType === 'token') {
                     fullText += event.content;
-                    contentEl.textContent = fullText;
+                    contentEl.innerHTML = renderMarkdown(fullText);
                     scrollToBottom();
                 } else if (eventType === 'done') {
                     fullText = event.content || fullText;
-                    contentEl.textContent = fullText;
+                    contentEl.innerHTML = renderMarkdown(fullText);
                     if (event.sources && event.sources.length > 0) {
                         renderSources(assistantMsg, event.sources);
                     }
@@ -1207,7 +1213,7 @@ function addMessageToUI(role, content, sourcesJson) {
     msgDiv.innerHTML = `
         <div class="message-avatar">${avatar}</div>
         <div class="message-content-wrapper">
-            <div class="message-content">${escapeHtml(content)}</div>
+            <div class="message-content">${renderMarkdown(content)}</div>
         </div>`;
     els.chatMessages.appendChild(msgDiv);
 
@@ -1242,8 +1248,11 @@ function renderSources(msgDiv, sources) {
                         <span>${escapeHtml(s.type || '')}</span>
                     </div>
                 </div>
-                <div class="source-score-bar">
-                    <div class="source-score-fill" style="width:${(s.score * 100).toFixed(0)}%"></div>
+                <div class="source-score">
+                    <span class="source-score-text">${(s.score * 100).toFixed(0)}%</span>
+                    <div class="source-score-bar">
+                        <div class="source-score-fill" style="width:${(s.score * 100).toFixed(0)}%"></div>
+                    </div>
                 </div>
             </div>
         `).join('')}`;
@@ -1258,6 +1267,87 @@ function renderSources(msgDiv, sources) {
             viewSourceChunk(docId, chunkIndex);
         });
     });
+}
+
+/**
+ * 在助手消息底部添加用户反馈按钮（👍 有帮助 / 👎 需要改进）
+ */
+function addFeedbackUI(msgDiv, conversationId) {
+    if (!conversationId) return;
+    const existing = msgDiv.querySelector('.message-feedback');
+    if (existing) existing.remove();
+
+    const feedbackDiv = document.createElement('div');
+    feedbackDiv.className = 'message-feedback';
+    feedbackDiv.innerHTML = `
+        <div class="feedback-divider"></div>
+        <div class="feedback-body">
+            <span class="feedback-label">这个回答对您有帮助吗？</span>
+            <div class="feedback-actions">
+                <button class="feedback-btn feedback-like" data-value="1" onclick="sendFeedback('${conversationId}', 1, this)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
+                    </svg>
+                    有帮助
+                </button>
+                <button class="feedback-btn feedback-dislike" data-value="-1" onclick="sendFeedback('${conversationId}', -1, this)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10zM17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/>
+                    </svg>
+                    需要改进
+                </button>
+            </div>
+        </div>
+    `;
+    msgDiv.querySelector('.message-content-wrapper').appendChild(feedbackDiv);
+}
+
+/**
+ * 提交用户反馈到后端
+ */
+async function sendFeedback(conversationId, value, btn) {
+    if (!conversationId || !state.authToken) return;
+
+    const feedbackDiv = btn.closest('.message-feedback');
+    const allBtns = feedbackDiv.querySelectorAll('.feedback-btn');
+    const isAlreadyActive = btn.classList.contains('active');
+
+    // 如果已选中，则取消选中（toggle 效果）
+    if (isAlreadyActive) {
+        btn.classList.remove('active');
+        value = 0;
+    } else {
+        allBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }
+
+    try {
+        const resp = await apiFetch(`${API_BASE}/conversations/${conversationId}/feedback`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ feedback: value }),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            if (value === 1) {
+                toast('感谢您的反馈 👍', 'success');
+            } else if (value === -1) {
+                toast('感谢您的反馈，我们会持续改进', 'info');
+            }
+        } else {
+            btn.classList.remove('active');
+            if (isAlreadyActive && value === 0) {
+                // 取消选中不需要报错
+            } else {
+                toast('反馈提交失败', 'error');
+            }
+        }
+    } catch (e) {
+        btn.classList.remove('active');
+        if (!(isAlreadyActive && value === 0)) {
+            toast('反馈提交失败: ' + e.message, 'error');
+        }
+    }
 }
 
 async function viewSourceChunk(docId, chunkIndex) {
@@ -1336,6 +1426,17 @@ function autoResizeInput() {
 
 function scrollToBottom() {
     els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
+}
+
+function renderMarkdown(text) {
+    if (!text) return '';
+    try {
+        if (typeof marked !== 'undefined' && marked.parse) {
+            return marked.parse(text, { breaks: true, gfm: true });
+        }
+    } catch (e) {}
+    // fallback: 简单转义换行
+    return escapeHtml(text).replace(/\n/g, '<br>');
 }
 
 function escapeHtml(text) {

@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 
 async def proxy_to_java(path: str, request: Request, params: dict = None):
-    """将请求代理转发到 Java 后端"""
+    """将请求代理转发到 Java 后端，转换 Java 的 {code, message, data} 格式到 {success, data} 格式"""
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             headers = {}
@@ -22,7 +22,21 @@ async def proxy_to_java(path: str, request: Request, params: dict = None):
 
             url = f"{JAVA_BACKEND}/api/dashboard/{path}"
             resp = await client.get(url, params=params, headers=headers)
-            return JSONResponse(content=resp.json())
+            java_resp = resp.json()
+            
+            # Java 格式: {code: 0, message: "success", data: ...}
+            # 转换为 Python 前端期望格式: {success: true/false, data: ..., error: ...}
+            if java_resp.get("code") == 0:
+                return JSONResponse(content={
+                    "success": True,
+                    "data": java_resp.get("data")
+                })
+            else:
+                return JSONResponse(content={
+                    "success": False,
+                    "data": None,
+                    "error": java_resp.get("message") or "请求失败"
+                })
         except httpx.ConnectError:
             return JSONResponse(content={
                 "success": False,

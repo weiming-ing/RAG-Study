@@ -83,7 +83,7 @@ public class Bm25ServiceImpl implements Bm25Service {
 
     @Override
     public void indexDocument(String chunkId, String content) {
-        indexDocuments(List.of(new IndexEntry(chunkId, content, "", "", "")));
+        indexDocuments(List.of(new IndexEntry(chunkId, content, "", "", "", "")));
     }
 
     @Override
@@ -99,6 +99,7 @@ public class Bm25ServiceImpl implements Bm25Service {
                 doc.add(new StoredField("parentContent", nullToEmpty(entry.parentContent())));
                 doc.add(new StoredField("docName", nullToEmpty(entry.docName())));
                 doc.add(new StoredField("department", nullToEmpty(entry.department())));
+                doc.add(new StoredField("kbName", nullToEmpty(entry.kbName())));
                 docs.add(doc);
             }
             indexWriter.addDocuments(docs);
@@ -140,6 +141,7 @@ public class Bm25ServiceImpl implements Bm25Service {
                         .metadata(Map.of(
                                 "docName", doc.get("docName"),
                                 "department", doc.get("department"),
+                                "kbName", doc.get("kbName"),
                                 "source", "bm25"
                         ))
                         .build();

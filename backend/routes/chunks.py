@@ -39,13 +39,14 @@ async def list_chunks(request: Request, docId: str = Query(None), pageNum: int =
             if keyword:
                 params["keyword"] = keyword
             resp = await client.get(
-                f"{JAVA_BACKEND}/api/internal/knowledge/chunks",
+                f"{JAVA_BACKEND}/api/chunks",
                 params=params,
                 headers=_get_auth_headers(request),
             )
             java_data = resp.json()
             if java_data.get("code") == 0:
-                chunks = java_data.get("data", [])
+                page_data = java_data.get("data", {})
+                chunks = page_data.get("records", [])
                 result = []
                 for c in chunks:
                     content = c.get("content", "")
@@ -66,9 +67,9 @@ async def list_chunks(request: Request, docId: str = Query(None), pageNum: int =
                     "success": True,
                     "data": {
                         "records": result,
-                        "total": len(result),
-                        "pageNum": pageNum,
-                        "pageSize": pageSize,
+                        "total": page_data.get("total", len(result)),
+                        "pageNum": page_data.get("current", pageNum),
+                        "pageSize": page_data.get("size", pageSize),
                     },
                 })
             return JSONResponse(content={"success": True, "data": {"records": [], "total": 0, "pageNum": pageNum, "pageSize": pageSize}})
@@ -83,7 +84,7 @@ async def update_chunk(chunk_id: str, body: ChunkUpdate, request: Request):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.put(
-                f"{JAVA_BACKEND}/api/internal/knowledge/chunks/{chunk_id}",
+                f"{JAVA_BACKEND}/api/chunks/{chunk_id}",
                 json={"content": body.content},
                 headers=_get_auth_headers(request),
             )
@@ -102,7 +103,7 @@ async def split_chunk(chunk_id: str, body: ChunkSplit, request: Request):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.post(
-                f"{JAVA_BACKEND}/api/internal/knowledge/chunks/{chunk_id}/split",
+                f"{JAVA_BACKEND}/api/chunks/{chunk_id}/split",
                 json={"splitPosition": body.splitPosition},
                 headers=_get_auth_headers(request),
             )
@@ -121,7 +122,7 @@ async def merge_chunks(body: ChunkMerge, request: Request):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.post(
-                f"{JAVA_BACKEND}/api/internal/knowledge/chunks/merge",
+                f"{JAVA_BACKEND}/api/chunks/merge",
                 json={"chunkIds": body.chunkIds},
                 headers=_get_auth_headers(request),
             )
@@ -140,8 +141,7 @@ async def rebuild_vectors(kb_id: str, request: Request):
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             resp = await client.post(
-                f"{JAVA_BACKEND}/api/internal/knowledge/rebuild",
-                json={"kbId": kb_id},
+                f"{JAVA_BACKEND}/api/chunks/rebuild/{kb_id}",
                 headers=_get_auth_headers(request),
             )
             java_data = resp.json()

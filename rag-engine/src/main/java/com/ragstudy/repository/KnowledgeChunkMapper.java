@@ -16,4 +16,7 @@ public interface KnowledgeChunkMapper extends BaseMapper<KnowledgeChunk> {
 
     @Select("SELECT * FROM knowledge_chunk WHERE parent_chunk_id = #{parentChunkId} AND deleted = 0")
     List<KnowledgeChunk> selectByParentChunkId(@Param("parentChunkId") String parentChunkId);
+
+    @Select("SELECT * FROM knowledge_chunk WHERE chunk_id = #{chunkId} AND deleted = 0 LIMIT 1")
+    KnowledgeChunk selectByChunkId(@Param("chunkId") String chunkId);
 }

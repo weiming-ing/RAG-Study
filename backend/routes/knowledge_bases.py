@@ -197,3 +197,63 @@ async def update_kb_config(kb_id: int, body: KnowledgeBaseConfig, request: Reque
             raise HTTPException(status_code=503, detail="Java 后端服务未启动")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"更新配置失败: {e}")
+
+
+@router.get("/{kb_id}/users")
+async def get_authorized_users(kb_id: int, request: Request):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.get(
+                f"{JAVA_BACKEND}/api/internal/knowledge-bases/{kb_id}/users",
+                headers=_get_auth_headers(request),
+            )
+            java_data = resp.json()
+            if java_data.get("code") == 0:
+                return JSONResponse(content={"success": True, "data": java_data.get("data", [])})
+            return JSONResponse(content={"success": False, "error": java_data.get("message", "获取授权用户失败")})
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503, detail="Java 后端服务未启动")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"获取授权用户失败: {e}")
+
+
+class GrantAccessRequest(BaseModel):
+    userIds: list[int]
+    accessLevel: str
+
+
+@router.post("/{kb_id}/users")
+async def grant_access(kb_id: int, body: GrantAccessRequest, request: Request):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.post(
+                f"{JAVA_BACKEND}/api/internal/knowledge-bases/{kb_id}/users",
+                json={"userIds": body.userIds, "accessLevel": body.accessLevel},
+                headers=_get_auth_headers(request),
+            )
+            java_data = resp.json()
+            if java_data.get("code") == 0:
+                return JSONResponse(content={"success": True, "message": "授权成功"})
+            return JSONResponse(content={"success": False, "error": java_data.get("message", "授权失败")})
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503, detail="Java 后端服务未启动")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"授权失败: {e}")
+
+
+@router.delete("/{kb_id}/users/{user_id}")
+async def revoke_access(kb_id: int, user_id: int, request: Request):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.delete(
+                f"{JAVA_BACKEND}/api/internal/knowledge-bases/{kb_id}/users/{user_id}",
+                headers=_get_auth_headers(request),
+            )
+            java_data = resp.json()
+            if java_data.get("code") == 0:
+                return JSONResponse(content={"success": True, "message": "撤销授权成功"})
+            return JSONResponse(content={"success": False, "error": java_data.get("message", "撤销授权失败")})
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503, detail="Java 后端服务未启动")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"撤销授权失败: {e}")

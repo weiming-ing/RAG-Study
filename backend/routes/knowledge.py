@@ -162,9 +162,13 @@ def _transform_search_results(java_data: dict) -> dict:
     items = []
     for r in results:
         metadata = r.get("metadata", {}) or {}
+        doc_name = metadata.get("docName") or metadata.get("fileName") or metadata.get("documentName", "未知文件")
+        kb_name = metadata.get("kbName") or metadata.get("datasetName", "未知知识库")
         items.append({
             "doc_id": metadata.get("documentId", ""),
-            "filename": metadata.get("fileName", "未知文件"),
+            "documentName": doc_name,
+            "kbName": kb_name,
+            "filename": doc_name,
             "chunk_index": metadata.get("chunkIndex", 0),
             "page": metadata.get("page", 0),
             "score": r.get("score", 0),

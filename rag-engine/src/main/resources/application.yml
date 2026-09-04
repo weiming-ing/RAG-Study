@@ -1,5 +1,12 @@
 server:
   port: 8002
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 20
+    accept-count: 100
+    max-connections: 8192
+    connection-timeout: 30000
 
 spring:
   application:
@@ -10,8 +17,8 @@ spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/rag_engine?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
-    username: root
-    password: 19980315
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD}
     hikari:
       minimum-idle: 5
       maximum-pool-size: 20
@@ -60,7 +67,7 @@ rag:
     vector-size: 512
 
 jwt:
-  secret: RAG_STUDY_2024_SECRET_KEY_MUST_BE_AT_LEAST_256_BITS_LONG_FOR_HS256
+  secret: ${JWT_SECRET}
   expiration: 86400000
   refresh-expiration: 604800000
 

@@ -7,3 +7,7 @@ export const updateKb = (id, data) => request.put(`/api/knowledge-bases/${id}`, 
 export const deleteKb = (id) => request.delete(`/api/knowledge-bases/${id}`)
 export const getKbConfig = (id) => request.get(`/api/knowledge-bases/${id}/config`)
 export const updateKbConfig = (id, data) => request.put(`/api/knowledge-bases/${id}/config`, data)
+export const getAuthorizedUsers = (kbId) => request.get(`/api/knowledge-bases/${kbId}/users`)
+export const grantAccess = (kbId, data) => request.post(`/api/knowledge-bases/${kbId}/users`, data)
+export const revokeAccess = (kbId, userId) => request.delete(`/api/knowledge-bases/${kbId}/users/${userId}`)
+export const getAvailableUsers = () => request.get('/api/admin/users/list')

@@ -18,5 +18,5 @@ public interface Bm25Service {
 
     void clear();
 
-    record IndexEntry(String chunkId, String content, String parentContent, String docName, String department) {}
+    record IndexEntry(String chunkId, String content, String parentContent, String docName, String department, String kbName) {}
 }

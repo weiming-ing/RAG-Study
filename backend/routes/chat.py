@@ -74,18 +74,30 @@ async def _record_audit(user_id: int, username: str, operation: str, detail: str
 
 
 async def _save_conversation(session_id: str, user_id: int, question: str, answer: str, sources: list = None, kb_id: str = None, token: str = ""):
-    """保存对话记录到 Java 后端（含引用文档名去重，失败不影响主流程）"""
+    """保存对话记录到 Java 后端（含 chunk_id 引用列表，失败不影响主流程）
+    
+    存储格式: [{"chunkId": "42_child_15", "docName": "报销管理制度.pdf"}, ...]
+    实现对话→切片→文档的完整精确追溯，消除同名歧义。
+    
+    返回: conversation_id (int) 或 None
+    """
     try:
         referenced = ""
         if sources:
-            doc_refs = []
+            chunk_refs = []
             seen = set()
             for s in sources:
+                chunk_id = s.get("chunk_id", "")
                 doc_name = s.get("filename", s.get("document_name", s.get("title", s.get("source", ""))))
-                if doc_name and doc_name not in seen:
-                    seen.add(doc_name)
-                    doc_refs.append(doc_name)
-            referenced = json.dumps(doc_refs, ensure_ascii=False)
+                # 用 chunk_id 去重（如果没有 chunk_id 则用 doc_name 去重）
+                dedup_key = chunk_id or doc_name
+                if dedup_key and dedup_key not in seen:
+                    seen.add(dedup_key)
+                    chunk_refs.append({
+                        "chunkId": chunk_id,
+                        "docName": doc_name
+                    })
+            referenced = json.dumps(chunk_refs, ensure_ascii=False)
 
         headers = {"Content-Type": "application/json"}
         if token:
@@ -105,10 +117,16 @@ async def _save_conversation(session_id: str, user_id: int, question: str, answe
                 },
                 headers=headers,
             )
-            if resp.status_code != 200:
+            if resp.status_code == 200:
+                data = resp.json()
+                # Java 后端返回 {code: 0, message: "success", data: {id: ...}} 格式
+                if data.get("code") == 0 and data.get("data", {}).get("id"):
+                    return data["data"]["id"]
+            else:
                 print(f"[_save_conversation] 保存失败: HTTP {resp.status_code} {resp.text[:200]}")
     except Exception as e:
         print(f"[_save_conversation] 保存对话失败: {e}")
+    return None
 
 
 @router.post("")
@@ -192,7 +210,7 @@ async def chat(request: ChatRequest, raw_request: Request, current_user: dict = 
             asyncio.create_task(_verify_and_log(full_response, sources))
 
         await session_service.add_message(session_id, "assistant", full_response, sources)
-        await _save_conversation(session_id, user_id, query, full_response, sources, token=token)
+        conv_id = await _save_conversation(session_id, user_id, query, full_response, sources, token=token)
 
         # 记录统计数据到管理平台大盘
         latency_ms = (time.time() - t_start) * 1000
@@ -209,7 +227,7 @@ async def chat(request: ChatRequest, raw_request: Request, current_user: dict = 
         estimated_completion = len(full_response) // 4
         await record_token_usage(kb_id_str, user_id, estimated_prompt, estimated_completion)
 
-        yield json.dumps({"token": "", "done": True, "sources": sources, "mode": "rag"}, ensure_ascii=False) + "\n"
+        yield json.dumps({"token": "", "done": True, "sources": sources, "mode": "rag", "conversation_id": conv_id}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(
         generate(),

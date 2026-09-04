@@ -48,6 +48,9 @@
               <el-radio-button :value="0">无</el-radio-button>
               <el-radio-button :value="-1">差评</el-radio-button>
             </el-radio-group>
+            <el-button size="small" text type="primary" @click="showChunkTrace(item)" style="margin-left: auto;">
+              <el-icon><Document /></el-icon> 查看引用
+            </el-button>
           </div>
         </div>
       </div>
@@ -61,14 +64,56 @@
         @current-change="loadData"
       />
     </el-card>
+
+    <!-- 引用追溯对话框：对话→切片→文档 -->
+    <el-dialog v-model="chunkTraceVisible" title="引用追溯" width="700px" top="5vh">
+      <div v-if="chunkTraceLoading" style="text-align: center; padding: 40px;">
+        <el-icon class="is-loading" :size="24"><Loading /></el-icon>
+        <p style="margin-top: 12px; color: #909399;">加载中...</p>
+      </div>
+      <div v-else-if="chunkTraceList.length === 0" style="text-align: center; padding: 40px; color: #909399;">
+        暂无引用数据
+      </div>
+      <el-timeline v-else>
+        <el-timeline-item
+          v-for="(item, idx) in chunkTraceList"
+          :key="idx"
+          :timestamp="item.docName || '未知文档'"
+          placement="top"
+          color="#409EFF"
+        >
+          <div class="trace-item">
+            <div class="trace-meta">
+              <el-tag size="small" type="info">chunk: {{ item.chunkId }}</el-tag>
+              <el-tag v-if="item.kbName" size="small" type="success">{{ item.kbName }}</el-tag>
+              <el-tag v-if="item.chunkIndex !== null && item.chunkIndex !== undefined" size="small">
+                切片 #{{ item.chunkIndex }}
+              </el-tag>
+            </div>
+            <div class="trace-content" v-if="item.chunkContent">
+              {{ item.chunkContent }}
+            </div>
+            <div class="trace-content" v-else style="color: #e6a23c;">
+              (切片内容已删除)
+            </div>
+            <div class="trace-doc-link" v-if="item.docId">
+              <el-link type="primary" :href="`/documents?docId=${item.docId}`" target="_blank">
+                查看文档详情 →
+              </el-link>
+            </div>
+          </div>
+        </el-timeline-item>
+      </el-timeline>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getConversations, updateFeedback as updateFeedbackApi } from '../../api/conversation'
+import { getConversations, updateFeedback as updateFeedbackApi, getConversationChunkTrace } from '../../api/conversation'
 import { ElMessage } from 'element-plus'
+import { Document, Loading } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -139,6 +184,28 @@ const updateFeedback = async (item) => {
     ElMessage.success('反馈更新成功')
   } catch (e) {
     ElMessage.error('更新失败')
+  }
+}
+
+// 引用追溯：对话→切片→文档
+const chunkTraceVisible = ref(false)
+const chunkTraceLoading = ref(false)
+const chunkTraceList = ref([])
+
+const showChunkTrace = async (item) => {
+  chunkTraceVisible.value = true
+  chunkTraceLoading.value = true
+  chunkTraceList.value = []
+  try {
+    const res = await getConversationChunkTrace(item.id)
+    if (res.data) {
+      chunkTraceList.value = res.data
+    }
+  } catch (e) {
+    console.error('加载引用追溯失败:', e)
+    ElMessage.error('加载引用追溯失败')
+  } finally {
+    chunkTraceLoading.value = false
   }
 }
 
@@ -255,6 +322,32 @@ const goBack = () => {
 .detail-footer {
   margin-top: 8px;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+}
+
+/* 引用追溯对话框 */
+.trace-item {
+  padding: 4px 0;
+}
+.trace-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.trace-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #606266;
+  background: #f5f7fa;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  max-height: 100px;
+  overflow-y: auto;
+}
+.trace-doc-link {
+  text-align: right;
 }
 </style>

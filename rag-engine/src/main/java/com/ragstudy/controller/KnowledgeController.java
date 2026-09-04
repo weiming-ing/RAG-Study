@@ -44,9 +44,10 @@ public class KnowledgeController {
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "20") int pageSize,
             @RequestParam(required = false) String department,
-            @RequestParam(required = false) String category) {
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) String keyword) {
 
-        Page<DocumentVO> page = knowledgeBaseService.listDocuments(pageNum, pageSize, department, category);
+        Page<DocumentVO> page = knowledgeBaseService.listDocuments(pageNum, pageSize, department, category, keyword);
         return ApiResponse.success(page);
     }
 

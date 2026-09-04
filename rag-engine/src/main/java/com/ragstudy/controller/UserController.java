@@ -23,6 +23,12 @@ public class UserController {
         this.userService = userService;
     }
 
+    @GetMapping("/list")
+    @PreAuthorize("hasRole('ROLE_ADMIN')")
+    public ApiResponse<List<UserVO>> listAll() {
+        return ApiResponse.success(userService.listAllUsers());
+    }
+
     @GetMapping
     @PreAuthorize("hasRole('ROLE_ADMIN')")
     public ApiResponse<IPage<UserVO>> list(

@@ -11,11 +11,8 @@ JAVA_BACKEND = os.getenv("JAVA_BACKEND_URL", "http://localhost:8002")
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 
-@router.get("/grouped")
-async def list_conversations_grouped(
-    request: Request,
-    current_user: dict = Depends(get_current_user),
-):
+async def _proxy_java_get(path: str, request: Request, params: dict = None):
+    """代理到 Java 后端，转换 Java {code, message, data} 格式到 {success, data} 格式"""
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             headers = {}
@@ -23,15 +20,32 @@ async def list_conversations_grouped(
             if auth:
                 headers["Authorization"] = auth
 
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/grouped",
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
+            resp = await client.get(f"{JAVA_BACKEND}{path}", params=params, headers=headers)
+            java_resp = resp.json()
+
+            if java_resp.get("code") == 0:
+                return JSONResponse(content={
+                    "success": True,
+                    "data": java_resp.get("data")
+                })
+            else:
+                return JSONResponse(content={
+                    "success": False,
+                    "data": None,
+                    "error": java_resp.get("message") or "请求失败"
+                })
         except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
+            return JSONResponse(content={"success": False, "data": None, "error": "Java 后端服务未启动（端口 8002）"})
         except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取分组对话记录失败: {e}"})
+            return JSONResponse(content={"success": False, "data": None, "error": f"请求失败: {e}"})
+
+
+@router.get("/grouped")
+async def list_conversations_grouped(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    return await _proxy_java_get("/api/conversations/grouped", request)
 
 
 @router.get("/{conversation_id}")
@@ -40,22 +54,17 @@ async def get_conversation_detail(
     request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
+    return await _proxy_java_get(f"/api/conversations/{conversation_id}", request)
 
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/{conversation_id}",
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取对话详情失败: {e}"})
+
+@router.get("/{conversation_id}/chunk-trace")
+async def get_conversation_chunk_trace(
+    conversation_id: int,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """追溯对话→切片→文档：返回 chunk_id 列表及其对应的切片内容和文档信息"""
+    return await _proxy_java_get(f"/api/conversations/{conversation_id}/chunk-trace", request)
 
 
 @router.post("/save-or-update")
@@ -76,7 +85,11 @@ async def save_or_update_conversation(
                 json=body,
                 headers=headers,
             )
-            return JSONResponse(content=resp.json())
+            java_resp = resp.json()
+            if java_resp.get("code") == 0:
+                return JSONResponse(content={"success": True, "data": java_resp.get("data")})
+            else:
+                return JSONResponse(content={"success": False, "error": java_resp.get("message") or "保存失败"})
         except httpx.ConnectError:
             return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
         except Exception as e:
@@ -95,35 +108,18 @@ async def list_conversations(
     userId: Optional[int] = Query(None),
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            params = {"pageNum": pageNum, "pageSize": pageSize}
-            if keyword:
-                params["keyword"] = keyword
-            if feedback is not None:
-                params["feedback"] = feedback
-            if startDate:
-                params["startDate"] = startDate
-            if endDate:
-                params["endDate"] = endDate
-            if userId is not None:
-                params["userId"] = userId
-
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
-
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations",
-                params=params,
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取对话记录失败: {e}"})
+    params = {"pageNum": pageNum, "pageSize": pageSize}
+    if keyword:
+        params["keyword"] = keyword
+    if feedback is not None:
+        params["feedback"] = feedback
+    if startDate:
+        params["startDate"] = startDate
+    if endDate:
+        params["endDate"] = endDate
+    if userId is not None:
+        params["userId"] = userId
+    return await _proxy_java_get("/api/conversations", request, params)
 
 
 @router.put("/{conversation_id}/feedback")
@@ -145,7 +141,11 @@ async def update_feedback(
                 json=body,
                 headers=headers,
             )
-            return JSONResponse(content=resp.json())
+            java_resp = resp.json()
+            if java_resp.get("code") == 0:
+                return JSONResponse(content={"success": True, "data": java_resp.get("data")})
+            else:
+                return JSONResponse(content={"success": False, "error": java_resp.get("message") or "更新失败"})
         except httpx.ConnectError:
             return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
         except Exception as e:
@@ -157,22 +157,7 @@ async def get_feedback_stats(
     request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
-
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/stats/feedback",
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取反馈统计失败: {e}"})
+    return await _proxy_java_get("/api/conversations/stats/feedback", request)
 
 
 @router.get("/stats/recent")
@@ -181,23 +166,7 @@ async def get_recent_stats(
     days: int = Query(7, ge=1),
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
-
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/stats/recent",
-                params={"days": days},
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取近期统计失败: {e}"})
+    return await _proxy_java_get("/api/conversations/stats/recent", request, {"days": days})
 
 
 @router.get("/stats/top-kb")
@@ -207,23 +176,7 @@ async def get_top_kb_stats(
     limit: int = Query(10, ge=1, le=50),
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
-
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/stats/top-kb",
-                params={"days": days, "limit": limit},
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取知识库排名失败: {e}"})
+    return await _proxy_java_get("/api/conversations/stats/top-kb", request, {"days": days, "limit": limit})
 
 
 @router.get("/stats/doc-ref-rank")
@@ -233,22 +186,7 @@ async def get_doc_ref_rank(
     limit: int = Query(10, ge=1, le=50),
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/stats/doc-ref-rank",
-                params={"days": days, "limit": limit},
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取文档引用排行失败: {e}"})
+    return await _proxy_java_get("/api/conversations/stats/doc-ref-rank", request, {"days": days, "limit": limit})
 
 
 @router.get("/stats/feedback-distribution")
@@ -257,23 +195,7 @@ async def get_feedback_distribution(
     days: int = Query(7, ge=1),
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
-
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/stats/feedback-distribution",
-                params={"days": days},
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取反馈分布失败: {e}"})
+    return await _proxy_java_get("/api/conversations/stats/feedback-distribution", request, {"days": days})
 
 
 @router.get("/stats/daily-trend")
@@ -282,23 +204,7 @@ async def get_daily_trend(
     days: int = Query(7, ge=1),
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
-
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/stats/daily-trend",
-                params={"days": days},
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取每日趋势失败: {e}"})
+    return await _proxy_java_get("/api/conversations/stats/daily-trend", request, {"days": days})
 
 
 @router.get("/stats/active-user-rank")
@@ -308,22 +214,7 @@ async def get_active_user_rank(
     limit: int = Query(10, ge=1),
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/stats/active-user-rank",
-                params={"days": days, "limit": limit},
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取活跃用户排名失败: {e}"})
+    return await _proxy_java_get("/api/conversations/stats/active-user-rank", request, {"days": days, "limit": limit})
 
 
 @router.get("/stats/recent-conversations")
@@ -332,22 +223,7 @@ async def get_recent_conversations(
     limit: int = Query(10, ge=1),
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/stats/recent-conversations",
-                params={"limit": limit},
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取最近对话失败: {e}"})
+    return await _proxy_java_get("/api/conversations/stats/recent-conversations", request, {"limit": limit})
 
 
 @router.get("/stats/today")
@@ -355,18 +231,4 @@ async def get_today_stats(
     request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            headers = {}
-            auth = request.headers.get("Authorization", "")
-            if auth:
-                headers["Authorization"] = auth
-            resp = await client.get(
-                f"{JAVA_BACKEND}/api/conversations/stats/today",
-                headers=headers,
-            )
-            return JSONResponse(content=resp.json())
-        except httpx.ConnectError:
-            return JSONResponse(content={"success": False, "error": "Java 后端服务未启动"})
-        except Exception as e:
-            return JSONResponse(content={"success": False, "error": f"获取今日统计失败: {e}"})
+    return await _proxy_java_get("/api/conversations/stats/today", request)

@@ -13,3 +13,4 @@ export const getDailyTrend = (days = 7) => request.get('/api/conversations/stats
 export const getActiveUserRank = (days = 7, limit = 10) => request.get('/api/conversations/stats/active-user-rank', { params: { days, limit } })
 export const getRecentConversations = (limit = 10) => request.get('/api/conversations/stats/recent-conversations', { params: { limit } })
 export const getTodayStats = () => request.get('/api/conversations/stats/today')
+export const getConversationChunkTrace = (id) => request.get(`/api/conversations/${id}/chunk-trace`)
