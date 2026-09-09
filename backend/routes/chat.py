@@ -14,6 +14,7 @@ from services.rag_service import rag_service
 from services.query_optimizer import query_optimizer
 from routes.auth import get_current_user
 from routes.dashboard import record_api_call, record_doc_hit, record_token_usage
+from config import SELF_RAG_VERIFY_TIMEOUT
 
 JAVA_BACKEND = os.getenv("JAVA_BACKEND_URL", "http://localhost:8002")
 
@@ -30,10 +31,12 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
   5. 知识检索 → rag_service.retrieve()
   6. 构建上下文 → rag_service.build_context()
   7. LLM 流式生成 → llm_service.generate()（SSE 流式返回）
-  8. [异步] Self-RAG 验证 → self_rag_service.verify()（后台执行，不阻塞响应）
-  9. 保存助手消息 → session_service.add_message()
-  10. 保存对话记录 → _save_conversation()
-  11. 记录统计数据 → record_api_call / record_doc_hit / record_token_usage
+  8. Self-RAG 验证 → self_rag_service.verify_with_reflection()（事实核查 + 检索质量评估）
+  9. 补充检索闭环 → 如果检索不充分：改写 query → 重新检索 → 重新生成
+  10. 警告反馈 → 将验证警告追加到 SSE 流中
+  11. 保存助手消息 → session_service.add_message()
+  12. 保存对话记录 → _save_conversation()
+  13. 记录统计数据 → record_api_call / record_doc_hit / record_token_usage
 """
 
 
@@ -47,6 +50,29 @@ async def _verify_and_log(full_response: str, sources: list):
                 print(f"[SELF-RAG] 验证警告: {warning[:200]}")
     except Exception as e:
         print(f"[SELF-RAG] 验证失败: {e}")
+
+
+async def _record_stats(
+    t_start: float, query: str, context: str, history_for_llm: list,
+    full_response: str, llm_error: bool, all_sources: list,
+    user_id: int, kb_id_str: str
+):
+    """后台异步记录统计（fire-and-forget，不阻塞 done 信号）"""
+    try:
+        latency_ms = (time.time() - t_start) * 1000
+        await record_api_call(kb_id_str, "/api/chat", not llm_error, latency_ms)
+
+        if all_sources:
+            for s in all_sources[:20]:
+                doc_id = s.get("document_id", s.get("doc_id", "unknown"))
+                doc_name = s.get("filename", s.get("document_name", s.get("title", s.get("source", "未知文档"))))
+                await record_doc_hit(str(doc_id), str(doc_name), kb_id_str)
+
+        estimated_prompt = len(query + context + str(history_for_llm)) // 4
+        estimated_completion = len(full_response) // 4
+        await record_token_usage(kb_id_str, user_id, estimated_prompt, estimated_completion)
+    except Exception as e:
+        print(f"[_record_stats] 统计记录失败: {e}")
 
 
 async def _record_audit(user_id: int, username: str, operation: str, detail: str, target_name: str = "", ip_address: str = "", result: str = "SUCCESS", token: str = ""):
@@ -195,6 +221,9 @@ async def chat(request: ChatRequest, raw_request: Request, current_user: dict = 
         t_start = time.time()
         full_response = ""
         llm_error = False
+        all_sources = sources  # 跟踪所有使用的检索结果（可能在补充检索后更新）
+
+        # ===== Phase 1: 初始检索 + LLM 流式生成 =====
         try:
             yield json.dumps({"status": "start", "mode": "rag"}, ensure_ascii=False) + "\n"
             async for llm_token in llm_service.generate(query, context, history_for_llm, KNOWLEDGE_SYSTEM_PROMPT):
@@ -206,28 +235,116 @@ async def chat(request: ChatRequest, raw_request: Request, current_user: dict = 
             full_response += error_msg
             yield json.dumps({"token": error_msg, "done": False}, ensure_ascii=False) + "\n"
 
-        if sources:
-            asyncio.create_task(_verify_and_log(full_response, sources))
+        # ===== Phase 2: Self-RAG 反思验证（事实核查 + 检索质量评估 + 查询改写） =====
+        verify_task = None
+        save_initial = None
+        if all_sources and not llm_error:
+            # 启动验证任务
+            verify_task = asyncio.create_task(
+                asyncio.wait_for(
+                    self_rag_service.verify_with_reflection(full_response, all_sources, query),
+                    timeout=SELF_RAG_VERIFY_TIMEOUT,
+                )
+            )
+            # 并行启动初始消息保存（验证期间完成，节省 50-100ms）
+            save_initial = asyncio.create_task(
+                session_service.add_message(session_id, "assistant", full_response, all_sources)
+            )
 
-        await session_service.add_message(session_id, "assistant", full_response, sources)
-        conv_id = await _save_conversation(session_id, user_id, query, full_response, sources, token=token)
+        if verify_task:
+            try:
+                verification = await verify_task
+            except asyncio.TimeoutError:
+                print(f"[SELF-RAG] 验证超时（>{SELF_RAG_VERIFY_TIMEOUT}s），跳过验证")
+                verification = None
+            except Exception as e:
+                print(f"[SELF-RAG] 反思验证异常: {e}")
+                verification = None
 
-        # 记录统计数据到管理平台大盘
-        latency_ms = (time.time() - t_start) * 1000
+            if verification:
+                if verification.get("needs_retrieval"):
+                    reformulated_query = verification.get("reformulated_query", query)
+                    retrieval_gap = verification.get("retrieval_gap", "参考资料不够充分")
+
+                    # 等待初始消息保存完成
+                    if save_initial:
+                        await save_initial
+                        save_initial = None
+
+                    # 通知用户正在补充检索
+                    gap_msg = (
+                        f"\n\n---\n"
+                        f"🔍 **检测到初始回答的资料不够充分**（{retrieval_gap}），"
+                        f"正在补充检索更相关的资料..."
+                    )
+                    yield json.dumps({"token": gap_msg, "done": False, "mode": "self_rag"}, ensure_ascii=False) + "\n"
+
+                    # 补充检索
+                    try:
+                        additional_sources = await rag_service.retrieve(
+                            reformulated_query, use_hybrid=True
+                        ) or []
+
+                        if additional_sources:
+                            new_context = rag_service.build_context(additional_sources)
+                            refined_response = ""
+
+                            yield json.dumps(
+                                {"token": "\n\n**📝 补充检索后的改进回答：**\n\n", "done": False, "mode": "self_rag"},
+                                ensure_ascii=False,
+                            ) + "\n"
+
+                            async for llm_token in llm_service.generate(
+                                query, new_context, history_for_llm, KNOWLEDGE_SYSTEM_PROMPT
+                            ):
+                                refined_response += llm_token
+                                yield json.dumps(
+                                    {"token": llm_token, "done": False, "mode": "self_rag"},
+                                    ensure_ascii=False,
+                                ) + "\n"
+
+                            # 用改进后的回答替换初始回答，并保存到会话
+                            full_response = refined_response
+                            all_sources = additional_sources
+                            await session_service.add_message(
+                                session_id, "assistant", full_response, all_sources
+                            )
+                            print(
+                                f"[SELF-RAG] 补充检索完成，query='{reformulated_query}'，"
+                                f"获取 {len(additional_sources)} 条结果"
+                            )
+                        else:
+                            print(f"[SELF-RAG] 补充检索无结果，query='{reformulated_query}'")
+                    except Exception as e:
+                        print(f"[SELF-RAG] 补充检索失败: {e}")
+
+                # 追加警告信息到 SSE 流
+                warning = self_rag_service.build_warning(verification)
+                if warning:
+                    yield json.dumps(
+                        {"token": warning, "done": False, "mode": "warning"},
+                        ensure_ascii=False,
+                    ) + "\n"
+                    print(f"[SELF-RAG] 验证警告已反馈用户: {warning[:150]}")
+
+        # 等待初始消息保存（如果还没完成且未被 re-retrieval 替换）
+        if save_initial:
+            await save_initial
+
+        # ===== Phase 3: 保存对话记录 + 统计 =====
+        conv_id = await _save_conversation(session_id, user_id, query, full_response, all_sources, token=token)
+
         kb_id_str = request.kb_id if hasattr(request, 'kb_id') and request.kb_id else ""
-        await record_api_call(kb_id_str, "/api/chat", not llm_error, latency_ms)
+        # 统计记录 fire-and-forget，不阻塞 done 信号
+        asyncio.create_task(_record_stats(
+            t_start, query, context, history_for_llm,
+            full_response, llm_error, all_sources, user_id, kb_id_str
+        ))
 
-        if sources:
-            for s in sources[:20]:
-                doc_id = s.get("document_id", s.get("doc_id", "unknown"))
-                doc_name = s.get("filename", s.get("document_name", s.get("title", s.get("source", "未知文档"))))
-                await record_doc_hit(str(doc_id), str(doc_name), kb_id_str)
-
-        estimated_prompt = len(query + context + str(history_for_llm)) // 4
-        estimated_completion = len(full_response) // 4
-        await record_token_usage(kb_id_str, user_id, estimated_prompt, estimated_completion)
-
-        yield json.dumps({"token": "", "done": True, "sources": sources, "mode": "rag", "conversation_id": conv_id}, ensure_ascii=False) + "\n"
+        yield json.dumps(
+            {"token": "", "done": True, "sources": all_sources, "mode": "rag", "conversation_id": conv_id},
+            ensure_ascii=False,
+        ) + "\n"
 
     return StreamingResponse(
         generate(),

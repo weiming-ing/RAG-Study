@@ -3,6 +3,7 @@
 # ============================================
 $base = "http://localhost:8002"
 $pass = 0; $fail = 0
+$testPassword = if ($env:TEST_PASSWORD) { $env:TEST_PASSWORD } else { "admin123" }
 
 function Test-Pass($name, $detail) {
     $script:pass++
@@ -20,7 +21,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Login as admin" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$body = '{"username":"admin","password":"admin123"}'
+$body = "{`"username`":`"admin`",`"password`":`"$testPassword`"}"
 $resp = Invoke-RestMethod -Uri "$base/api/auth/login" -Method Post -Body $body -ContentType 'application/json'
 $token = $resp.data.accessToken
 Write-Host "  Token: $($token.Substring(0,20))..." -ForegroundColor Gray

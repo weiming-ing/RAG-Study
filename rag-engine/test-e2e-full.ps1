@@ -4,6 +4,7 @@
 # ============================================
 $base = "http://localhost:8002"
 $pass = 0; $fail = 0
+$testPassword = if ($env:TEST_PASSWORD) { $env:TEST_PASSWORD } else { "admin123" }
 
 function Test-Pass($n, $d) { $script:pass++; Write-Host "  [PASS] $n | $d" -ForegroundColor Green }
 function Test-Fail($n, $d) { $script:fail++; Write-Host "  [FAIL] $n | $d" -ForegroundColor Red }
@@ -16,7 +17,7 @@ Header "P1: Authentication"
 
 Write-Host ""
 try {
-    $body = '{"username":"admin","password":"admin123"}'
+    $body = "{`"username`":`"admin`",`"password`":`"$testPassword`"}"
     $r = Invoke-RestMethod -Uri "$base/api/auth/login" -Method Post -Body $body -ContentType "application/json"
     $token = $r.data.accessToken
     if ($r.code -eq 0 -and $token) { Test-Pass "P1-1" "login success" } else { Test-Fail "P1-1" "login failed" }

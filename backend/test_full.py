@@ -1,10 +1,11 @@
 import asyncio
 import httpx
 import sys
+import os
 
-BASE_URL = "http://localhost:8001"
-TEST_USERNAME = "testuser"
-TEST_PASSWORD = "test123456"
+BASE_URL = os.getenv("PYTHON_BACKEND_URL", "http://localhost:8001")
+TEST_USERNAME = os.getenv("TEST_USERNAME", "testuser")
+TEST_PASSWORD = os.getenv("TEST_PASSWORD", "test123456")
 TEST_DISPLAY = "测试用户"
 
 passed = 0

@@ -43,6 +43,7 @@ public class EmbeddingServiceImpl implements EmbeddingService {
     private OrtSession session;
     private HuggingFaceTokenizer tokenizer;
     private boolean initialized = false;
+    private final List<Path> tempFiles = new ArrayList<>();
 
     /**
      * 构造函数，注入配置
@@ -88,17 +89,31 @@ public class EmbeddingServiceImpl implements EmbeddingService {
     }
 
     /**
-     * 解析路径，支持 classpath: 前缀，表示从 resources 目录加载
+     * 解析路径，支持 classpath: 前缀。
+     * 优先尝试文件系统路径；若资源在 JAR 内部，则复制到临时文件。
      * @param path 配置中的路径
-     * @return 绝对路径
+     * @return 可用的文件系统绝对路径
      */
     private String resolvePath(String path) {
         if (path.startsWith("classpath:")) {
             String classpathPath = path.substring("classpath:".length());
+            ClassPathResource resource = new ClassPathResource(classpathPath);
             try {
-                return new ClassPathResource(classpathPath).getFile().getAbsolutePath();
+                // 优先尝试直接文件访问（IDE 开发环境）
+                return resource.getFile().getAbsolutePath();
             } catch (IOException e) {
-                throw new RuntimeException("无法解析 classpath 资源: " + classpathPath, e);
+                // 资源在 JAR 内部，无法直接获取文件路径，复制到临时文件
+                log.info("classpath 资源在 JAR 内，复制到临时文件: {}", classpathPath);
+                try (InputStream is = resource.getInputStream()) {
+                    String suffix = classpathPath.substring(classpathPath.lastIndexOf('.'));
+                    Path tempFile = Files.createTempFile("rag-embedding-", suffix);
+                    Files.copy(is, tempFile, StandardCopyOption.REPLACE_EXISTING);
+                    tempFile.toFile().deleteOnExit();
+                    tempFiles.add(tempFile);
+                    return tempFile.toAbsolutePath().toString();
+                } catch (IOException ex) {
+                    throw new RuntimeException("无法从 JAR 中提取 classpath 资源: " + classpathPath, ex);
+                }
             }
         }
         return path;
@@ -479,6 +494,15 @@ public class EmbeddingServiceImpl implements EmbeddingService {
             if (env != null) {
                 env.close();
             }
+            // 清理临时文件
+            for (Path tempFile : tempFiles) {
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (IOException e) {
+                    log.warn("清理临时文件失败: {}", tempFile, e);
+                }
+            }
+            tempFiles.clear();
             log.info("Embedding 服务已关闭");
         } catch (Exception e) {
             log.error("Embedding 服务关闭失败", e);

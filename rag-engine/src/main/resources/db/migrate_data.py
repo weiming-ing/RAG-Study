@@ -10,14 +10,15 @@
 """
 import pymysql
 import re
+import os
 
-# 数据库配置
+# 数据库配置（从环境变量读取，敏感信息不硬编码）
 DB_CONFIG = {
-    "host": "127.0.0.1",
-    "port": 3306,
-    "user": "root",
-    "password": "19980315",
-    "database": "rag_engine",
+    "host": os.getenv("DB_HOST", "127.0.0.1"),
+    "port": int(os.getenv("DB_PORT", "3306")),
+    "user": os.getenv("DB_USERNAME", "root"),
+    "password": os.getenv("DB_PASSWORD", ""),
+    "database": os.getenv("DB_DATABASE", "rag_engine"),
     "charset": "utf8mb4",
 }
 

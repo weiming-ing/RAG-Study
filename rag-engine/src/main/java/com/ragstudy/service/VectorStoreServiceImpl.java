@@ -260,6 +260,13 @@ public class VectorStoreServiceImpl implements VectorStoreService {
         }
 
         try {
+            // 如果集合不存在，说明没有数据，无需删除
+            boolean exists = client.collectionExistsAsync(collectionName).get();
+            if (!exists) {
+                log.debug("集合不存在，跳过删除: collection={}, id={}", collectionName, id);
+                return;
+            }
+
             // 使用与写入时相同的 UUID 生成策略（确定性 UUID），确保能定位到之前写入的向量
             client.deleteAsync(collectionName,
                     List.of(id(UUID.nameUUIDFromBytes(id.getBytes()))),

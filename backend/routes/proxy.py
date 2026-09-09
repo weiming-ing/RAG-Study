@@ -59,6 +59,12 @@ async def proxy_debug(request: Request, rest: str):
     return await _proxy_request(request, url)
 
 
+@router.api_route("/api-keys", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_apikey_base(request: Request):
+    url = f"{JAVA_BACKEND}/api/api-keys"
+    return await _proxy_request(request, url)
+
+
 @router.api_route("/api-keys/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_apikey(request: Request, rest: str):
     url = f"{JAVA_BACKEND}/api/api-keys/{rest}"

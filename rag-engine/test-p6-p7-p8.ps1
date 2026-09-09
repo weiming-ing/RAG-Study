@@ -2,6 +2,7 @@
 param($base = "http://localhost:8002")
 
 $pass = 0; $fail = 0; $docId = $null; $chunkId = $null; $chunkId2 = $null; $caseId = $null; $convId = $null
+$testPassword = if ($env:TEST_PASSWORD) { $env:TEST_PASSWORD } else { "admin123" }
 
 function Test-Pass($n, $d) { $script:pass++; Write-Host "  PASS: $n $d" -ForegroundColor Green }
 function Test-Fail($n, $d) { $script:fail++; Write-Host "  FAIL: $n $d" -ForegroundColor Red }
@@ -10,7 +11,7 @@ function Test-Fail($n, $d) { $script:fail++; Write-Host "  FAIL: $n $d" -Foregro
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  Login" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
-$loginBody = '{"username":"admin","password":"admin123"}'
+$loginBody = "{`"username`":`"admin`",`"password`":`"$testPassword`"}"
 $loginResp = Invoke-RestMethod -Uri "$base/api/auth/login" -Method Post -Body $loginBody -ContentType "application/json"
 $token = $loginResp.data.accessToken
 Write-Host "  Token: $($token.Substring(0,20))..."

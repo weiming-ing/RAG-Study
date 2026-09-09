@@ -9,6 +9,7 @@ $base = "http://localhost:8002"
 $pass = 0
 $fail = 0
 $results = @()
+$testPassword = if ($env:TEST_PASSWORD) { $env:TEST_PASSWORD } else { "admin123" }
 
 function Test-Case {
     param([string]$module, [string]$name, [scriptblock]$test)
@@ -60,7 +61,7 @@ Write-Host "============================================" -ForegroundColor Cyan
 
 # Login
 Write-Host "`n--- Login ---" -ForegroundColor Yellow
-$loginBody = @{username="admin";password="admin123"} | ConvertTo-Json
+$loginBody = @{username="admin";password=$testPassword} | ConvertTo-Json
 $loginResp = Invoke-RestMethod -Uri "$base/api/auth/login" -Method Post -Body $loginBody -ContentType "application/json"
 $token = $loginResp.data.accessToken
 Write-Host "  Token: $($token.Substring(0,20))..." -ForegroundColor Gray

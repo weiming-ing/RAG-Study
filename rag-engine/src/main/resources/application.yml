@@ -18,7 +18,7 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/rag_engine?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
     username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD}
+    password: ${DB_PASSWORD:19980315}
     hikari:
       minimum-idle: 5
       maximum-pool-size: 20
@@ -67,7 +67,7 @@ rag:
     vector-size: 512
 
 jwt:
-  secret: ${JWT_SECRET}
+  secret: ${JWT_SECRET:rag-study-dev-secret-key-2024-must-be-32bytes}
   expiration: 86400000
   refresh-expiration: 604800000
 
