@@ -1,0 +1,16 @@
+import request from './request'
+
+export const getConversations = (params) => request.get('/api/conversations', { params })
+export const getGroupedConversations = () => request.get('/api/conversations/grouped')
+export const saveConversation = (data) => request.post('/api/conversations', data)
+export const updateFeedback = (id, data) => request.put(`/api/conversations/${id}/feedback`, data)
+export const getFeedbackStats = (days = 7) => request.get('/api/conversations/stats/feedback')
+export const getRecentStats = (days = 7) => request.get('/api/conversations/stats/recent', { params: { days } })
+export const getTopKbStats = (days = 7, limit = 10) => request.get('/api/conversations/stats/top-kb', { params: { days, limit } })
+export const getDocRefRank = (days = 7, limit = 10) => request.get('/api/conversations/stats/doc-ref-rank', { params: { days, limit } })
+export const getFeedbackDistribution = (days = 7) => request.get('/api/conversations/stats/feedback-distribution', { params: { days } })
+export const getDailyTrend = (days = 7) => request.get('/api/conversations/stats/daily-trend', { params: { days } })
+export const getActiveUserRank = (days = 7, limit = 10) => request.get('/api/conversations/stats/active-user-rank', { params: { days, limit } })
+export const getRecentConversations = (limit = 10) => request.get('/api/conversations/stats/recent-conversations', { params: { limit } })
+export const getTodayStats = () => request.get('/api/conversations/stats/today')
+export const getConversationChunkTrace = (id) => request.get(`/api/conversations/${id}/chunk-trace`)

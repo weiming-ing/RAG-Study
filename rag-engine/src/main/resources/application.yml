@@ -1,0 +1,79 @@
+server:
+  port: 8002
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 20
+    accept-count: 100
+    max-connections: 8192
+    connection-timeout: 30000
+
+spring:
+  application:
+    name: rag-engine
+  profiles:
+    active: dev
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/rag_engine?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:19980315}
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 300000
+      connection-timeout: 20000
+
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.ragstudy.model.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    db-config:
+      id-type: assign_id
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# 知识库配置
+rag:
+  embedding:
+    model-path: classpath:models/onnx/model.onnx
+    tokenizer-path: classpath:models/tokenizer.json
+    dimension: 512
+    batch-size: 32
+  chunker:
+    child-size: 300
+    parent-size: 1000
+    overlap: 50
+  retrieval:
+    top-k: 10
+    vector-weight: 0.7
+    bm25-weight: 0.3
+    multi-hop-min-score: 0.4
+    multi-hop-min-sources: 2
+    rerank-top-k: 10
+  bm25:
+    index-path: ./data/bm25_index
+    auto-rebuild: true
+  qdrant:
+    host: localhost
+    port: 6334
+    collection-name: rag_knowledge
+    parent-collection-name: rag_knowledge_parent
+    vector-size: 512
+
+jwt:
+  secret: ${JWT_SECRET:rag-study-dev-secret-key-2024-must-be-32bytes}
+  expiration: 86400000
+  refresh-expiration: 604800000
+
+logging:
+  level:
+    com.ragstudy: DEBUG
+    org.apache.lucene: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

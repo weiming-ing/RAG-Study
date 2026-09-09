@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>企业知识库 RAG 客服助手</title>
+    <link rel="stylesheet" href="style.css?v=20260903a">
+</head>
+<body>
+    <div class="login-overlay" id="login-overlay">
+        <div class="login-card">
+            <div class="login-left">
+                <div class="login-bg-pattern"></div>
+                <div class="login-left-content">
+                    <h2 class="login-left-title">登录后</h2>
+                    <p class="login-left-subtitle">有问题，免费聊</p>
+                </div>
+            </div>
+            <div class="login-right">
+                <h2 class="login-form-title" id="login-title">账号密码登录</h2>
+                <div class="login-form" id="login-form">
+                    <div class="login-field">
+                        <svg class="login-field-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="8" r="4"/>
+                            <path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/>
+                        </svg>
+                        <input type="text" id="login-username" class="login-input" placeholder="用户名" autocomplete="username" />
+                    </div>
+                    <div class="login-field">
+                        <svg class="login-field-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="11" width="18" height="11" rx="2"/>
+                            <path d="M7 11V7a5 5 0 0110 0v4"/>
+                        </svg>
+                        <input type="password" id="login-password" class="login-input" placeholder="密码" autocomplete="current-password" />
+                    </div>
+                    <div class="login-register-fields" id="register-fields" style="display:none;">
+                        <div class="login-field">
+                            <svg class="login-field-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/>
+                                <circle cx="12" cy="7" r="4"/>
+                            </svg>
+                            <input type="text" id="register-display-name" class="login-input" placeholder="显示名称（选填）" />
+                        </div>
+                    </div>
+                    <div class="login-error" id="login-error" style="display:none;"></div>
+                    <button class="btn btn-login btn-login-primary" id="btn-login-submit">
+                        <span class="btn-login-text">登 录</span>
+                        <span class="btn-login-loader" style="display:none;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                                <circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="32">
+                                    <animate attributeName="stroke-dashoffset" values="32;0" dur="0.8s" repeatCount="indefinite"/>
+                                </circle>
+                            </svg>
+                        </span>
+                    </button>
+                    <p class="login-toggle">
+                        <span id="login-toggle-text">还没有账号？</span>
+                        <a href="javascript:void(0)" id="btn-toggle-mode">立即注册</a>
+                    </p>
+                    <p class="login-guest-link">
+                        <a href="javascript:void(0)" id="btn-guest-mode">跳过登录，直接体验</a>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container" id="app-container" style="display:none;">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>会话列表</h2>
+                <button class="btn-icon" id="btn-new-session" title="新建会话">+</button>
+            </div>
+            <div class="session-list" id="session-list"></div>
+            <div class="sidebar-footer">
+                <button class="btn btn-outline btn-sm" id="btn-toggle-kb">知识库管理</button>
+            </div>
+        </aside>
+
+        <div class="kb-panel" id="kb-panel" style="display:none;">
+            <div class="kb-header">
+                <h3>知识库</h3>
+                <button class="btn-icon" id="btn-close-kb">✕</button>
+            </div>
+
+            <div class="kb-stats" id="kb-stats">
+                <div class="stat-item">
+                    <span class="stat-value" id="stat-docs">0</span>
+                    <span class="stat-label">文档</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="stat-chunks">0</span>
+                    <span class="stat-label">分块</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="stat-size">0 B</span>
+                    <span class="stat-label">总大小</span>
+                </div>
+            </div>
+
+            <div class="kb-tabs">
+                <button class="kb-tab active" data-tab="documents">文档</button>
+                <button class="kb-tab" data-tab="manual">手动条目</button>
+            </div>
+
+            <div class="kb-tab-content active" id="tab-documents">
+                <div class="kb-search">
+                    <input type="text" id="kb-search-input" placeholder="搜索知识库..." />
+                    <button class="btn-icon" id="btn-kb-search" title="搜索">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <circle cx="11" cy="11" r="8"/>
+                            <path d="M21 21l-4.35-4.35"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="kb-section-title">文档列表</div>
+                <div class="kb-doc-list" id="kb-doc-list">
+                    <p class="empty-hint">暂无文档，请通过管理平台上传</p>
+                </div>
+            </div>
+
+            <div class="kb-tab-content" id="tab-manual">
+                <div class="kb-manual-add">
+                    <button class="btn btn-primary btn-sm" id="btn-add-manual">添加条目</button>
+                </div>
+                <div class="kb-doc-list" id="kb-manual-list">
+                    <p class="empty-hint">暂无手动条目</p>
+                </div>
+            </div>
+
+            <div class="kb-footer">
+                <div class="kb-auto-refresh" id="kb-auto-refresh" title="列表自动刷新中">
+                    <span class="refresh-dot"></span>
+                    <span>自动刷新</span>
+                </div>
+            </div>
+        </div>
+
+        <main class="main-area">
+            <header class="chat-header">
+                <button class="btn-icon toggle-sidebar" id="btn-toggle-sidebar">☰</button>
+                <h1>企业知识库 RAG 客服助手</h1>
+                <button class="btn btn-agent" id="btn-agent-toggle" title="切换Agent模式（闲聊+工具）">RAG检索</button>
+                <span class="agent-badge" id="agent-badge" style="display:none">Agent</span>
+                <div class="header-right">
+                    <span class="user-info" id="user-info"></span>
+                    <button class="btn btn-primary btn-sm" id="btn-guest-login" style="display:none">登录</button>
+                    <button class="btn btn-outline btn-sm" id="btn-logout">退出</button>
+                </div>
+                <span class="status" id="status-indicator">● 就绪</span>
+            </header>
+            <div class="chat-messages" id="chat-messages">
+            </div>
+            <div class="chat-input-area">
+                <div class="input-wrapper">
+                    <textarea id="chat-input" rows="1" placeholder="输入您的问题..." disabled></textarea>
+                    <button class="btn btn-primary" id="btn-send" disabled>发送</button>
+                    <button class="btn btn-stop" id="btn-stop" style="display:none" title="停止生成">停止</button>
+                </div>
+                <p class="input-hint">请先创建或选择一个会话开始对话</p>
+            </div>
+        </main>
+    </div>
+
+    <div class="modal-overlay" id="chunk-modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="chunk-modal-title">文档分块预览</h3>
+                <button class="btn-icon" id="btn-close-chunk-modal">✕</button>
+            </div>
+            <div class="modal-body" id="chunk-modal-body"></div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="edit-modal" style="display:none;">
+        <div class="modal-content modal-edit">
+            <div class="modal-header">
+                <h3 id="edit-modal-title">编辑分块</h3>
+                <button class="btn-icon" id="btn-close-edit-modal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="edit-meta" id="edit-meta"></div>
+                <textarea id="edit-content" class="edit-textarea" rows="12" placeholder="输入内容..."></textarea>
+                <div class="edit-actions">
+                    <button class="btn btn-outline" id="btn-cancel-edit">取消</button>
+                    <button class="btn btn-primary" id="btn-save-edit">保存回写</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="manual-modal" style="display:none;">
+        <div class="modal-content modal-edit">
+            <div class="modal-header">
+                <h3 id="manual-modal-title">添加手动条目</h3>
+                <button class="btn-icon" id="btn-close-manual-modal">✕</button>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="manual-title" class="edit-input" placeholder="标题" />
+                <textarea id="manual-content" class="edit-textarea" rows="10" placeholder="输入内容..."></textarea>
+                <input type="text" id="manual-tags" class="edit-input" placeholder="标签（逗号分隔）" />
+                <div class="edit-actions">
+                    <button class="btn btn-outline" id="btn-cancel-manual">取消</button>
+                    <button class="btn btn-primary" id="btn-save-manual">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.6/marked.min.js"></script>
+    <script src="app.js?v=20260903a"></script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+{
+  "name": "RAG 助手 MCP 服务",
+  "description": "RAG 知识库检索 MCP 服务器，提供企业内部知识查询能力",
+  "version": "1.0.0",
+  "mcp_version": "1.0.0",
+  "server": {
+    "command": "uvicorn",
+    "args": ["mcp_server:app", "--host", "0.0.0.0", "--port", "8003"],
+    "env": {},
+    "cwd": "."
+  },
+  "tools": [
+    {
+      "name": "search_knowledge",
+      "description": "在企业知识库中进行语义搜索，返回与查询最相关的文档片段"
+    },
+    {
+      "name": "list_knowledge_bases",
+      "description": "获取所有可用的知识库列表"
+    },
+    {
+      "name": "get_document_chunks",
+      "description": "获取指定文档的所有切片内容"
+    },
+    {
+      "name": "health_check",
+      "description": "检查 RAG MCP 服务状态"
+    }
+  ]
+}
