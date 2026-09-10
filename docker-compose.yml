@@ -6,7 +6,7 @@ services:
     container_name: rag-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: 19980315
+      MYSQL_ROOT_PASSWORD: 
       MYSQL_DATABASE: rag_engine
       MYSQL_CHARACTER_SET_SERVER: utf8mb4
       MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
