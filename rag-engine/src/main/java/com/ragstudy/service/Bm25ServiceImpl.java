@@ -100,6 +100,8 @@ public class Bm25ServiceImpl implements Bm25Service {
                 doc.add(new StoredField("docName", nullToEmpty(entry.docName())));
                 doc.add(new StoredField("department", nullToEmpty(entry.department())));
                 doc.add(new StoredField("kbName", nullToEmpty(entry.kbName())));
+                doc.add(new StoredField("kbId", nullToEmpty(entry.kbId())));
+                doc.add(new StoredField("documentId", nullToEmpty(entry.documentId())));
                 docs.add(doc);
             }
             indexWriter.addDocuments(docs);
@@ -120,6 +122,14 @@ public class Bm25ServiceImpl implements Bm25Service {
      */
     @Override
     public List<SearchResultVO> search(String query, int topK) {
+        return search(query, topK, null);
+    }
+
+    /**
+     * BM25 检索（带过滤）：支持按 payload 字段（如 kbId）后置过滤结果
+     */
+    @Override
+    public List<SearchResultVO> search(String query, int topK, Map<String, String> filters) {
         lock.readLock().lock();
         try {
             QueryParser parser = new MultiFieldQueryParser(
@@ -127,25 +137,63 @@ public class Bm25ServiceImpl implements Bm25Service {
                     analyzer
             );
             Query luceneQuery = parser.parse(QueryParser.escape(query));
-            TopDocs topDocs = indexSearcher.search(luceneQuery, topK);
+            TopDocs topDocs = indexSearcher.search(luceneQuery, topK * 3);
 
             List<SearchResultVO> results = new ArrayList<>();
             for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
                 Document doc = indexSearcher.storedFields().document(scoreDoc.doc);
+
+                String docKbId = doc.get("kbId");
+                String docDocumentId = doc.get("documentId");
+
+                if (filters != null && !filters.isEmpty()) {
+                    boolean matches = true;
+                    for (Map.Entry<String, String> filter : filters.entrySet()) {
+                        if ("kbIds".equals(filter.getKey())) {
+                            // 多知识库范围：逗号分隔集合包含判断（三级可见级别的服务端强制范围）
+                            java.util.Set<String> allowed = new java.util.HashSet<>();
+                            for (String part : filter.getValue().split(",")) {
+                                String trimmed = part.trim();
+                                if (!trimmed.isEmpty()) allowed.add(trimmed);
+                            }
+                            if (docKbId == null || !allowed.contains(docKbId)) {
+                                matches = false;
+                                break;
+                            }
+                            continue;
+                        }
+                        String storedValue = null;
+                        if ("kbId".equals(filter.getKey())) {
+                            storedValue = docKbId;
+                        } else if ("documentId".equals(filter.getKey())) {
+                            storedValue = docDocumentId;
+                        }
+                        if (storedValue == null || !storedValue.equals(filter.getValue())) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (!matches) continue;
+                }
+
                 float maxScore = topDocs.scoreDocs.length > 0 ? topDocs.scoreDocs[0].score : 1.0f;
                 SearchResultVO result = SearchResultVO.builder()
                         .id(doc.get("chunkId"))
                         .content(doc.get("content_stored"))
                         .parentContent(doc.get("parentContent"))
                         .score(normalizeScore(scoreDoc.score, maxScore))
-                        .metadata(Map.of(
+                        .metadata(new java.util.HashMap<>(Map.of(
                                 "docName", doc.get("docName"),
                                 "department", doc.get("department"),
                                 "kbName", doc.get("kbName"),
+                                "kbId", nullToEmpty(docKbId),
+                                "documentId", nullToEmpty(docDocumentId),
                                 "source", "bm25"
-                        ))
+                        )))
                         .build();
                 results.add(result);
+
+                if (results.size() >= topK) break;
             }
             return results;
         } catch (Exception e) {

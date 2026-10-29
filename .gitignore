@@ -26,9 +26,13 @@ data/*.db
 temp_*
 *.tmp
 
-# 环境变量
+# 环境变量（保留 .env.example，便于克隆后配置）
 .env
-.env.local
+.env.*
+!.env.example
+
+# Docker
+docker/.env
 
 # Node.js
 node_modules/
@@ -50,3 +54,38 @@ rag-engine/target/
 # 日志
 rag-engine/logs/
 *.log
+
+# 离线交付产物（体积大，不入库）
+deploy/offline/dist/
+
+# 授权：私钥绝不能入库；已签发的授权文件按客户单独管理
+deploy/license/keys/
+license.json
+*.license.json
+
+# 检索/存储运行时产物（不应入库）
+data/bm25_index/
+rag-engine/data/bm25_index/
+storage/
+*.rdb
+
+# 临时/探测/分析产物
+.zcode/
+frontend/vendor/
+RAG.html
+_fix_patch.py
+1
+2
+hset')
+response2.txt
+test_pdf.txt
+tk.txt
+学习.md
+
+# backend 临时探测 / 生成报告
+backend/probe_docs.py
+backend/probe_docs2.py
+backend/probe_full_content.txt
+backend/probe_output.txt
+backend/report_output.md
+backend/evaluation_report.json

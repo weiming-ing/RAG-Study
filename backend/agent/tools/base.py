@@ -15,8 +15,11 @@ async def _get_session_history(session_id: str) -> str:
     return "\n".join(lines)
 
 
-async def _search_knowledge(query: str, top_k: int = 5) -> str:
-    sources = await rag_service.retrieve(query, top_k=top_k, use_hybrid=True)
+async def _search_knowledge(query: str, top_k: int = 5, kb_id: str = "", kb_ids: list = None) -> str:
+    sources = await rag_service.retrieve(
+        query, top_k=top_k, use_hybrid=True,
+        kb_ids=kb_ids or None, kb_id=kb_id or None,
+    )
     if not sources:
         return "未在知识库中找到相关内容。"
     lines = [f"知识库检索结果（共 {len(sources)} 条）:"]

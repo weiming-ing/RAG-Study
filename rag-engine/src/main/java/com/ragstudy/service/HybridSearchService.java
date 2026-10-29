@@ -57,6 +57,26 @@ public class HybridSearchService {
      * 每种检索独立 try-catch，单侧失败不影响另一侧
      */
     public List<SearchResultVO> hybridSearch(String query, int topK, Map<String, String> filters) {
+        return hybridSearch(query, topK, filters, null, null);
+    }
+
+    /**
+     * 混合检索（支持 KB 级权重覆盖）
+     * @param query 查询文本
+     * @param topK 返回结果数
+     * @param filters 过滤条件（kbId, documentId 等）
+     * @param customVectorWeight KB 级向量权重（null 则用全局配置）
+     * @param customBm25Weight KB 级 BM25 权重（null 则用全局配置）
+     */
+    public List<SearchResultVO> hybridSearch(String query, int topK, Map<String, String> filters,
+                                              Double customVectorWeight, Double customBm25Weight) {
+        double vw = customVectorWeight != null ? customVectorWeight : ragConfig.getRetrieval().getVectorWeight();
+        double bw = customBm25Weight != null ? customBm25Weight : ragConfig.getRetrieval().getBm25Weight();
+        return hybridSearchInternal(query, topK, filters, vw, bw);
+    }
+
+    private List<SearchResultVO> hybridSearchInternal(String query, int topK, Map<String, String> filters,
+                                                       double vectorWeight, double bm25Weight) {
         long t0 = System.currentTimeMillis();
 
         // 1. 先做 Embedding（向量化，无法并行，前置完成）
@@ -80,7 +100,7 @@ public class HybridSearchService {
 
         CompletableFuture<List<SearchResultVO>> bm25Future = CompletableFuture.supplyAsync(() -> {
             try {
-                return bm25Service.search(query, topK * 2);
+                return bm25Service.search(query, topK * 2, filters);
             } catch (Exception e) {
                 log.error("BM25 检索失败", e);
                 return List.<SearchResultVO>of();
@@ -104,7 +124,7 @@ public class HybridSearchService {
         }
 
         // 4. 加权融合
-        List<SearchResultVO> merged = mergeResults(vectorResults, bm25Results);
+        List<SearchResultVO> merged = mergeResults(vectorResults, bm25Results, vectorWeight, bm25Weight);
 
         // 5. 去重
         List<SearchResultVO> deduplicated = deduplicate(merged);
@@ -126,13 +146,18 @@ public class HybridSearchService {
      * 加权融合：相同 chunkId 的结果分数累加（vectorScore*weight + bm25Score*weight）
      * 不同 chunkId 的结果各自保留，最终按加权分数降序排列
      */
-    private List<SearchResultVO> mergeResults(List<SearchResultVO> vectorResults, List<SearchResultVO> bm25Results) {
-        double vectorWeight = ragConfig.getRetrieval().getVectorWeight();
-        double bm25Weight = ragConfig.getRetrieval().getBm25Weight();
+    private List<SearchResultVO> mergeResults(List<SearchResultVO> vectorResults, List<SearchResultVO> bm25Results,
+                                               double vectorWeight, double bm25Weight) {
 
         Map<String, SearchResultVO> merged = new LinkedHashMap<>();
 
         for (SearchResultVO r : vectorResults) {
+            // 保留未加权的余弦原始分：KB 级 similarityThreshold 的语义是原始相似度，
+            // 若用加权分比较会被 vectorWeight(0.7) 压到阈值之下造成误杀
+            Map<String, Object> meta = r.getMetadata();
+            if (meta != null) {
+                meta.put("vectorScore", r.getScore());
+            }
             SearchResultVO weighted = SearchResultVO.builder()
                     .id(r.getId())
                     .chunkId(r.getChunkId())

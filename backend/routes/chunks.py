@@ -1,6 +1,6 @@
 import os
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Body, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List
@@ -8,6 +8,9 @@ from typing import Optional, List
 router = APIRouter(prefix="/api/chunks", tags=["chunks"])
 
 JAVA_BACKEND = os.getenv("JAVA_BACKEND_URL", "http://localhost:8002")
+
+from routes.auth import require_admin
+from utils.admin_audit import record_admin_op_bg
 
 
 class ChunkUpdate(BaseModel):
@@ -80,7 +83,7 @@ async def list_chunks(request: Request, docId: str = Query(None), pageNum: int =
 
 
 @router.put("/{chunk_id}")
-async def update_chunk(chunk_id: str, body: ChunkUpdate, request: Request):
+async def update_chunk(chunk_id: str, body: ChunkUpdate, request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.put(
@@ -90,6 +93,7 @@ async def update_chunk(chunk_id: str, body: ChunkUpdate, request: Request):
             )
             java_data = resp.json()
             if java_data.get("code") == 0:
+                record_admin_op_bg(current_user, "UPDATE", f"编辑分块 {chunk_id}", target_id=chunk_id)
                 return JSONResponse(content={"success": True, "message": "更新成功"})
             return JSONResponse(content={"success": False, "error": java_data.get("message", "更新失败")})
         except httpx.ConnectError:
@@ -99,7 +103,7 @@ async def update_chunk(chunk_id: str, body: ChunkUpdate, request: Request):
 
 
 @router.post("/{chunk_id}/split")
-async def split_chunk(chunk_id: str, body: ChunkSplit, request: Request):
+async def split_chunk(chunk_id: str, body: ChunkSplit, request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.post(
@@ -109,6 +113,7 @@ async def split_chunk(chunk_id: str, body: ChunkSplit, request: Request):
             )
             java_data = resp.json()
             if java_data.get("code") == 0:
+                record_admin_op_bg(current_user, "SPLIT", f"拆分分块 {chunk_id}", target_id=chunk_id)
                 return JSONResponse(content={"success": True, "message": "拆分成功"})
             return JSONResponse(content={"success": False, "error": java_data.get("message", "拆分失败")})
         except httpx.ConnectError:
@@ -118,7 +123,7 @@ async def split_chunk(chunk_id: str, body: ChunkSplit, request: Request):
 
 
 @router.post("/merge")
-async def merge_chunks(body: ChunkMerge, request: Request):
+async def merge_chunks(body: ChunkMerge, request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.post(
@@ -128,6 +133,7 @@ async def merge_chunks(body: ChunkMerge, request: Request):
             )
             java_data = resp.json()
             if java_data.get("code") == 0:
+                record_admin_op_bg(current_user, "MERGE", f"合并分块 {body.chunkIds}", target_id=",".join(body.chunkIds))
                 return JSONResponse(content={"success": True, "message": "合并成功"})
             return JSONResponse(content={"success": False, "error": java_data.get("message", "合并失败")})
         except httpx.ConnectError:
@@ -137,7 +143,7 @@ async def merge_chunks(body: ChunkMerge, request: Request):
 
 
 @router.post("/rebuild/{kb_id}")
-async def rebuild_vectors(kb_id: str, request: Request):
+async def rebuild_vectors(kb_id: str, request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             resp = await client.post(
@@ -146,6 +152,7 @@ async def rebuild_vectors(kb_id: str, request: Request):
             )
             java_data = resp.json()
             if java_data.get("code") == 0:
+                record_admin_op_bg(current_user, "REBUILD", f"重建知识库 {kb_id} 向量索引", target_id=kb_id)
                 return JSONResponse(content={"success": True, "message": "重建向量索引成功"})
             return JSONResponse(content={"success": False, "error": java_data.get("message", "重建失败")})
         except httpx.ConnectError:

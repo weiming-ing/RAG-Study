@@ -37,6 +37,13 @@
                 <el-option label="混合检索" value="hybrid" />
               </el-select>
             </el-form-item>
+            <el-form-item label="访问级别">
+              <el-select v-model="form.visibility" style="width: 300px">
+                <el-option label="公共级（所有人，含访客）" value="PUBLIC" />
+                <el-option label="员工级（所有登录用户）" value="EMPLOYEE" />
+                <el-option label="管理级（仅授权用户）" value="MANAGEMENT" />
+              </el-select>
+            </el-form-item>
             <el-form-item label="系统提示词">
               <el-input v-model="form.systemPrompt" type="textarea" :rows="4" placeholder="可自定义知识库的系统提示词" />
             </el-form-item>
@@ -75,6 +82,11 @@
 
             <el-empty v-if="authorizedUsers.length === 0" description="暂无授权用户" style="margin-top: 40px" />
           </div>
+        </el-tab-pane>
+
+        <!-- 检索调试并入知识库配置：调 topK/阈值/权重后不用跳页，直接在本库范围内验证召回 -->
+        <el-tab-pane label="检索调试" name="debug" lazy>
+          <DebugConsole :default-kb-id="kbId" />
         </el-tab-pane>
       </el-tabs>
     </el-card>
@@ -115,6 +127,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getKbConfig, updateKbConfig, getAuthorizedUsers, grantAccess, revokeAccess, getAvailableUsers } from '../../api/kb'
 import { rebuildKbVectors } from '../../api/chunk'
+import DebugConsole from '../debug/DebugConsole.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const route = useRoute()
@@ -128,7 +141,8 @@ const activeTab = ref('config')
 const form = reactive({
   embeddingModel: 'text-embedding-ada-002',
   chunkSize: 500, chunkOverlap: 50, topK: 5,
-  similarityThreshold: 0.7, retrievalStrategy: 'semantic', systemPrompt: ''
+  similarityThreshold: 0.7, retrievalStrategy: 'semantic', systemPrompt: '',
+  visibility: 'EMPLOYEE'
 })
 
 const authorizedUsers = ref([])
@@ -158,7 +172,8 @@ const loadConfig = async () => {
       embeddingModel: data.embeddingModel || 'text-embedding-ada-002',
       chunkSize: data.chunkSize || 500, chunkOverlap: data.chunkOverlap || 50,
       topK: data.topK || 5, similarityThreshold: data.similarityThreshold || 0.7,
-      retrievalStrategy: data.retrievalStrategy || 'semantic', systemPrompt: data.systemPrompt || ''
+      retrievalStrategy: data.retrievalStrategy || 'semantic', systemPrompt: data.systemPrompt || '',
+      visibility: data.visibilityLevel || 'EMPLOYEE'
     })
   } catch (e) { console.error(e) }
   finally { loading.value = false }

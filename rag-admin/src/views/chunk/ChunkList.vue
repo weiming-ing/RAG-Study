@@ -2,11 +2,12 @@
   <div class="page">
     <el-card>
       <div class="toolbar">
-        <el-select v-model="filterKbId" clearable placeholder="筛选知识库" style="width: 200px">
+        <el-button v-if="scopedDocId" @click="$router.push(`/kb/${scopedKbId}/documents`)">← 返回文档列表</el-button>
+        <el-select v-if="!scopedDocId" v-model="filterKbId" clearable placeholder="筛选知识库" style="width: 200px">
           <el-option v-for="kb in kbList" :key="kb.id" :label="kb.name" :value="kb.id" />
         </el-select>
         <el-input v-model="search" placeholder="搜索分块内容" style="width: 260px" clearable />
-        <el-button type="success" @click="rebuildDialogVisible = true">重建向量索引</el-button>
+        <el-button v-if="!scopedDocId" type="success" @click="rebuildDialogVisible = true">重建向量索引</el-button>
       </div>
       <el-table :data="tableData" v-loading="loading" style="margin-top: 16px">
         <el-table-column prop="id" label="ID" width="80" />
@@ -72,14 +73,20 @@
 
 <script setup>
 import { ref, reactive, watch, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { getChunks, updateChunk, splitChunk as splitChunkApi, rebuildKbVectors } from '../../api/chunk'
 import { getKbs } from '../../api/kb'
 import { ElMessage } from 'element-plus'
 
+const route = useRoute()
+// 钻取模式：从文档列表进入时带 kbId+docId，按文档过滤分块
+const scopedKbId = route.params.kbId ? Number(route.params.kbId) : null
+const scopedDocId = route.params.docId || null
+
 const loading = ref(false)
 const tableData = ref([])
 const search = ref('')
-const filterKbId = ref(null)
+const filterKbId = ref(scopedKbId)
 const page = ref(1)
 const total = ref(0)
 const kbList = ref([])
@@ -105,7 +112,8 @@ const loadKbList = async () => {
 const loadData = async () => {
   loading.value = true
   try {
-    const res = await getChunks({ pageNum: page.value, pageSize: 10, keyword: search.value || undefined, kbId: filterKbId.value || undefined })
+    const params = { pageNum: page.value, pageSize: 10, keyword: search.value || undefined, kbId: filterKbId.value || undefined, docId: scopedDocId || undefined }
+    const res = await getChunks(params)
     if (res.data?.records) {
       tableData.value = res.data.records
       total.value = res.data.total || 0

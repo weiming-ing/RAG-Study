@@ -23,6 +23,8 @@ public class DocumentVO {
     private String summary;
     private LocalDateTime createTime;
 
+    private String content;
+
     @JsonProperty("kbId")
     private Long knowledgeBaseId;
 
@@ -51,6 +53,8 @@ public class DocumentVO {
     public void setStatus(String status) { this.status = status; }
     public String getSummary() { return summary; }
     public void setSummary(String summary) { this.summary = summary; }
+    public String getContent() { return content; }
+    public void setContent(String content) { this.content = content; }
     public LocalDateTime getCreateTime() { return createTime; }
     public void setCreateTime(LocalDateTime createTime) { this.createTime = createTime; }
 
@@ -73,6 +77,7 @@ public class DocumentVO {
         private String status;
         private String summary;
         private LocalDateTime createTime;
+        private String content;
         private Long knowledgeBaseId;
         private String knowledgeBaseName;
 
@@ -86,6 +91,7 @@ public class DocumentVO {
         public Builder totalParentChunks(Integer totalParentChunks) { this.totalParentChunks = totalParentChunks; return this; }
         public Builder status(String status) { this.status = status; return this; }
         public Builder summary(String summary) { this.summary = summary; return this; }
+        public Builder content(String content) { this.content = content; return this; }
         public Builder createTime(LocalDateTime createTime) { this.createTime = createTime; return this; }
         public Builder knowledgeBaseId(Long knowledgeBaseId) { this.knowledgeBaseId = knowledgeBaseId; return this; }
         public Builder knowledgeBaseName(String knowledgeBaseName) { this.knowledgeBaseName = knowledgeBaseName; return this; }
@@ -102,6 +108,7 @@ public class DocumentVO {
             vo.totalParentChunks = this.totalParentChunks;
             vo.status = this.status;
             vo.summary = this.summary;
+            vo.content = this.content;
             vo.createTime = this.createTime;
             vo.knowledgeBaseId = this.knowledgeBaseId;
             vo.knowledgeBaseName = this.knowledgeBaseName;

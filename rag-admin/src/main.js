@@ -30,5 +30,9 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
 
 app.use(createPinia())
 app.use(router)
-app.use(ElementPlus, { locale: { el: { table: { emptyText: '暂无数据' } } } })
+// locale 必须是带 name 字段的完整语言包：element-plus 的 useLocale 取
+// locale.name 传给 dayjs().locale()，缺失时 dayjs 返回 locale 字符串而非
+// 实例，date-picker 会报 "dayjs(...).locale(...).add is not a function"
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
+app.use(ElementPlus, { locale: zhCn })
 app.mount('#app')

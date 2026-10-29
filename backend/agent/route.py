@@ -1,5 +1,6 @@
 import json
 import time
+import asyncio
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 
@@ -7,9 +8,10 @@ from models.schemas import ChatRequest
 from agent.core import agent_service
 from agent.tool_registry import tool_registry
 from services.session_service import session_service
+from services import kb_access
 from routes.auth import get_current_user
-from routes.chat import _record_audit, _save_conversation
-from routes.dashboard import record_api_call, record_doc_hit, record_token_usage
+from routes.chat import _record_audit, _save_conversation_bounded
+from routes.dashboard import record_batch
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -28,13 +30,22 @@ async def agent_chat(request: ChatRequest, raw_request: Request, current_user: d
     username = current_user.get("username", "unknown")
     user_id = current_user.get("id")
 
+    # 服务端检索范围强制：请求 kb_id 仅为范围缩小提示，不可访问直接 403
+    accessible_ids, _is_admin = await kb_access.get_accessible_kb_ids(user_id)
+    if request.kb_id:
+        if int(request.kb_id) not in accessible_ids:
+            raise HTTPException(status_code=403, detail="无权访问该知识库")
+        kb_scope = [int(request.kb_id)]
+    else:
+        kb_scope = accessible_ids
+
     await session_service.add_message(session_id, "user", query)
     await session_service.update_title(session_id, query)
 
     # 记录审计日志
     await _record_audit(user_id, username, "QUERY", f"发送问题: {query[:100]}", target_name=session_id, token=token)
 
-    history = await session_service.get_history(session_id)
+    history = await session_service.get_history(session_id, token=token)
     history_for_llm = [
         {"role": h["role"], "content": h["content"]}
         for h in history[:-1]
@@ -50,6 +61,7 @@ async def agent_chat(request: ChatRequest, raw_request: Request, current_user: d
                 query=query,
                 history=history_for_llm,
                 session_id=session_id,
+                kb_ids=kb_scope,
             ):
                 event_type = event.get("type", "")
                 event_json = json.dumps(event, ensure_ascii=False)
@@ -67,24 +79,31 @@ async def agent_chat(request: ChatRequest, raw_request: Request, current_user: d
             yield json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False) + "\n"
 
         await session_service.add_message(session_id, "assistant", full_response, sources)
-        await _save_conversation(session_id, user_id, query, full_response, sources, token=token)
+        conv_id = await _save_conversation_bounded(session_id, user_id, query, full_response, sources, token=token)
 
-        # 记录统计数据到管理平台大盘
+        # 记录统计数据到管理平台大盘（一次批量上报，doc-hit 按文档去重）
         latency_ms = (time.time() - t_start) * 1000
         kb_id_str = request.kb_id if hasattr(request, 'kb_id') and request.kb_id else ""
-        await record_api_call(kb_id_str, "/api/agent/chat", not agent_error, latency_ms)
+        doc_hits, seen_docs = [], set()
+        for s in sources[:20]:
+            doc_id = str(s.get("document_id", s.get("doc_id", "unknown")))
+            if doc_id in seen_docs:
+                continue
+            seen_docs.add(doc_id)
+            doc_name = s.get("document_name", s.get("title", s.get("source", "未知文档")))
+            doc_hits.append({"documentId": doc_id, "docName": doc_name, "kbId": kb_id_str})
+        asyncio.create_task(record_batch(
+            [{"kbId": kb_id_str, "apiPath": "/api/agent/chat", "success": not agent_error, "latencyMs": latency_ms}],
+            doc_hits,
+            [{"kbId": kb_id_str, "userId": user_id,
+              "promptTokens": len(query + str(history_for_llm)) // 4,
+              "completionTokens": len(full_response) // 4}],
+        ))
 
-        if sources:
-            for s in sources[:20]:
-                doc_id = s.get("document_id", s.get("doc_id", "unknown"))
-                doc_name = s.get("document_name", s.get("title", s.get("source", "未知文档")))
-                await record_doc_hit(str(doc_id), str(doc_name), kb_id_str)
-
-        estimated_prompt = len(query + str(history_for_llm)) // 4
-        estimated_completion = len(full_response) // 4
-        await record_token_usage(kb_id_str, user_id, estimated_prompt, estimated_completion)
-
-        yield json.dumps({"type": "finished", "content": "", "done": True}, ensure_ascii=False) + "\n"
+        yield json.dumps(
+            {"type": "finished", "content": "", "done": True, "conversation_id": conv_id},
+            ensure_ascii=False,
+        ) + "\n"
 
     return StreamingResponse(
         generate(),

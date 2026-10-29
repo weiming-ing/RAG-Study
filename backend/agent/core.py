@@ -106,6 +106,7 @@ class AgentService:
         query: str,
         history: List[dict] = None,
         session_id: str = "",
+        kb_ids: list = None,
     ) -> AsyncGenerator[dict, None]:
         history = history or []
         messages = self._build_messages(query, history)
@@ -151,6 +152,10 @@ class AgentService:
 
                     if tool_name == "get_session_history" and "session_id" not in arguments:
                         arguments["session_id"] = session_id
+
+                    # 检索工具强制带上服务端解析的 KB 范围，防止 Agent 绕过三级可见级别
+                    if tool_name == "search_knowledge" and kb_ids:
+                        arguments["kb_ids"] = kb_ids
 
                     yield {
                         "type": "tool_call",
@@ -230,6 +235,7 @@ class AgentService:
         query: str,
         history: List[dict] = None,
         session_id: str = "",
+        kb_ids: list = None,
     ) -> AsyncGenerator[dict, None]:
         history = history or []
         messages = self._build_messages(query, history)
@@ -275,6 +281,10 @@ class AgentService:
 
                     if tool_name == "get_session_history" and "session_id" not in arguments:
                         arguments["session_id"] = session_id
+
+                    # 检索工具强制带上服务端解析的 KB 范围，防止 Agent 绕过三级可见级别
+                    if tool_name == "search_knowledge" and kb_ids:
+                        arguments["kb_ids"] = kb_ids
 
                     yield {
                         "type": "tool_call",

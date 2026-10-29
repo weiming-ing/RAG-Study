@@ -5,23 +5,27 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.ragstudy.common.BusinessException;
+import com.ragstudy.config.RagConfig;
 import com.ragstudy.model.dto.KbAccessRequest;
 import com.ragstudy.model.dto.KbConfigRequest;
 import com.ragstudy.model.dto.KbCreateRequest;
 import com.ragstudy.model.entity.KbKnowledgeBase;
 import com.ragstudy.model.entity.KbUserAccess;
+import com.ragstudy.model.entity.KnowledgeChunk;
 import com.ragstudy.model.entity.KnowledgeDocument;
 import com.ragstudy.model.entity.SysUser;
 import com.ragstudy.model.vo.KbAccessUserVO;
 import com.ragstudy.model.vo.KbKnowledgeBaseVO;
+import com.ragstudy.model.vo.AccessibleKbsVO;
 import com.ragstudy.repository.*;
 import com.ragstudy.security.SecurityUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -44,19 +48,39 @@ import java.util.stream.Collectors;
 @Service
 public class KnowledgeBaseManageService {
 
+    private static final Logger log = LoggerFactory.getLogger(KnowledgeBaseManageService.class);
+
+    /** KB 可见级别（kb_knowledge_base.visibility） */
+    public static final String VIS_PUBLIC = "PUBLIC";
+    public static final String VIS_EMPLOYEE = "EMPLOYEE";
+    public static final String VIS_MANAGEMENT = "MANAGEMENT";
+    private static final Set<String> VALID_VISIBILITIES = Set.of(VIS_PUBLIC, VIS_EMPLOYEE, VIS_MANAGEMENT);
+
     private final KbKnowledgeBaseMapper kbMapper;
     private final KbUserAccessMapper kbUserAccessMapper;
     private final SysUserMapper sysUserMapper;
     private final KnowledgeDocumentMapper documentMapper;
+    private final KnowledgeChunkMapper chunkMapper;
+    private final VectorStoreService vectorStoreService;
+    private final Bm25Service bm25Service;
+    private final RagConfig ragConfig;
 
     public KnowledgeBaseManageService(KbKnowledgeBaseMapper kbMapper,
                                       KbUserAccessMapper kbUserAccessMapper,
                                       SysUserMapper sysUserMapper,
-                                      KnowledgeDocumentMapper documentMapper) {
+                                      KnowledgeDocumentMapper documentMapper,
+                                      KnowledgeChunkMapper chunkMapper,
+                                      VectorStoreService vectorStoreService,
+                                      Bm25Service bm25Service,
+                                      RagConfig ragConfig) {
         this.kbMapper = kbMapper;
         this.kbUserAccessMapper = kbUserAccessMapper;
         this.sysUserMapper = sysUserMapper;
         this.documentMapper = documentMapper;
+        this.chunkMapper = chunkMapper;
+        this.vectorStoreService = vectorStoreService;
+        this.bm25Service = bm25Service;
+        this.ragConfig = ragConfig;
     }
 
     public IPage<KbKnowledgeBaseVO> listKbs(int pageNum, int pageSize, String keyword, String category) {
@@ -74,8 +98,14 @@ public class KnowledgeBaseManageService {
             wrapper.eq(KbKnowledgeBase::getCategory, category);
         }
         if (!isAdmin) {
-            wrapper.and(w -> w.eq(KbKnowledgeBase::getIsPublic, 1)
-                    .or().eq(KbKnowledgeBase::getOwnerId, userId));
+            List<Long> grantedKbIds = kbUserAccessMapper.selectKbIdsByUserId(userId);
+            wrapper.and(w -> {
+                w.in(KbKnowledgeBase::getVisibility, VIS_PUBLIC, VIS_EMPLOYEE)
+                        .or().eq(KbKnowledgeBase::getOwnerId, userId);
+                if (!grantedKbIds.isEmpty()) {
+                    w.or().in(KbKnowledgeBase::getId, grantedKbIds);
+                }
+            });
         }
         wrapper.orderByDesc(KbKnowledgeBase::getCreateTime);
 
@@ -96,6 +126,7 @@ public class KnowledgeBaseManageService {
         if (kb == null) {
             throw new BusinessException("知识库不存在");
         }
+        assertKbReadable(id, SecurityUtils.getCurrentUserId());
         KbKnowledgeBaseVO vo = toVO(kb);
         vo.setAuthorizedUsers(getAuthorizedUsers(id));
 
@@ -125,7 +156,7 @@ public class KnowledgeBaseManageService {
         kb.setCoverUrl(request.getCoverUrl());
         kb.setOwnerId(userId);
         kb.setDepartment(request.getDepartment());
-        kb.setIsPublic(request.getIsPublic() != null ? request.getIsPublic() : 1);
+        applyVisibility(kb, request.getVisibility(), request.getIsPublic());
         kb.setStatus("ENABLED");
 
         kb.setChunkSize(300);
@@ -161,7 +192,7 @@ public class KnowledgeBaseManageService {
         if (request.getTags() != null) kb.setTags(request.getTags());
         if (request.getCoverUrl() != null) kb.setCoverUrl(request.getCoverUrl());
         if (request.getDepartment() != null) kb.setDepartment(request.getDepartment());
-        if (request.getIsPublic() != null) kb.setIsPublic(request.getIsPublic());
+        applyVisibility(kb, request.getVisibility(), request.getIsPublic());
         kbMapper.updateById(kb);
 
         return getKbById(id);
@@ -185,6 +216,7 @@ public class KnowledgeBaseManageService {
         if (request.getPromptTemplate() != null) kb.setPromptTemplate(request.getPromptTemplate());
         if (request.getBlacklistWords() != null) kb.setBlacklistWords(request.getBlacklistWords());
         if (request.getWhitelistWords() != null) kb.setWhitelistWords(request.getWhitelistWords());
+        applyVisibility(kb, request.getVisibility(), null);
         kbMapper.updateById(kb);
     }
 
@@ -204,8 +236,31 @@ public class KnowledgeBaseManageService {
         if (kb == null) {
             throw new BusinessException("知识库不存在");
         }
-        kbMapper.deleteById(id);
+
+        List<KnowledgeDocument> documents = documentMapper.selectList(
+                new LambdaQueryWrapper<KnowledgeDocument>().eq(KnowledgeDocument::getKbId, id));
+        for (KnowledgeDocument doc : documents) {
+            List<KnowledgeChunk> chunks = chunkMapper.selectByDocumentId(doc.getId());
+            for (KnowledgeChunk chunk : chunks) {
+                vectorStoreService.deleteById(ragConfig.getQdrant().getCollectionName(), chunk.getChunkId());
+                bm25Service.removeDocument(chunk.getChunkId());
+            }
+            Set<String> parentChunkIds = chunks.stream()
+                    .map(KnowledgeChunk::getParentChunkId)
+                    .filter(pid -> pid != null && !pid.isEmpty())
+                    .collect(Collectors.toSet());
+            for (String parentChunkId : parentChunkIds) {
+                vectorStoreService.deleteById(ragConfig.getQdrant().getParentCollectionName(), parentChunkId);
+            }
+            chunkMapper.delete(new LambdaQueryWrapper<KnowledgeChunk>()
+                    .eq(KnowledgeChunk::getDocumentId, doc.getId()));
+        }
+
+        documentMapper.delete(new LambdaQueryWrapper<KnowledgeDocument>().eq(KnowledgeDocument::getKbId, id));
         kbUserAccessMapper.delete(new LambdaQueryWrapper<KbUserAccess>().eq(KbUserAccess::getKbId, id));
+        kbMapper.deleteById(id);
+
+        log.info("知识库已彻底删除: id={}, name={}, documents={}", id, kb.getName(), documents.size());
     }
 
     public List<KbAccessUserVO> getAuthorizedUsers(Long kbId) {
@@ -234,6 +289,8 @@ public class KnowledgeBaseManageService {
         if (kb == null) {
             throw new BusinessException("知识库不存在");
         }
+        // 越权修复：此前任何登录用户可给任何 KB 授权
+        assertCanManageAccess(kbId, SecurityUtils.getCurrentUserId());
 
         for (Long userId : request.getUserIds()) {
             String existingLevel = kbUserAccessMapper.selectAccessLevel(kbId, userId);
@@ -255,11 +312,154 @@ public class KnowledgeBaseManageService {
 
     @Transactional
     public void revokeAccess(Long kbId, Long userId) {
+        assertCanManageAccess(kbId, SecurityUtils.getCurrentUserId());
         kbUserAccessMapper.delete(
                 new LambdaQueryWrapper<KbUserAccess>()
                         .eq(KbUserAccess::getKbId, kbId)
                         .eq(KbUserAccess::getUserId, userId)
         );
+    }
+
+    /**
+     * 解析用户可访问的知识库集合（三级可见级别的服务端强制依据）。
+     *
+     * userId 为 null 表示访客：仅 PUBLIC 级。
+     * ROLE_ADMIN：全部知识库。
+     * 其他用户：PUBLIC + EMPLOYEE + kb_user_access 授权记录 + 自己创建的。
+     */
+    public AccessibleKbsVO getAccessibleKbs(Long userId) {
+        AccessibleKbsVO vo = new AccessibleKbsVO();
+        boolean isAdmin = userId != null && isAdmin(userId);
+        vo.setIsAdmin(isAdmin);
+
+        if (userId == null) {
+            List<Long> publicIds = kbMapper.selectList(
+                            new LambdaQueryWrapper<KbKnowledgeBase>()
+                                    .select(KbKnowledgeBase::getId)
+                                    .eq(KbKnowledgeBase::getVisibility, VIS_PUBLIC))
+                    .stream().map(KbKnowledgeBase::getId).collect(Collectors.toList());
+            vo.setKbIds(publicIds);
+            return vo;
+        }
+
+        if (isAdmin) {
+            vo.setKbIds(kbMapper.selectList(
+                            new LambdaQueryWrapper<KbKnowledgeBase>().select(KbKnowledgeBase::getId))
+                    .stream().map(KbKnowledgeBase::getId).collect(Collectors.toList()));
+            return vo;
+        }
+
+        // LinkedHashSet 去重保序
+        Set<Long> ids = new LinkedHashSet<>();
+        kbMapper.selectList(new LambdaQueryWrapper<KbKnowledgeBase>()
+                        .select(KbKnowledgeBase::getId)
+                        .in(KbKnowledgeBase::getVisibility, VIS_PUBLIC, VIS_EMPLOYEE))
+                .forEach(kb -> ids.add(kb.getId()));
+        ids.addAll(kbUserAccessMapper.selectKbIdsByUserId(userId));
+        kbMapper.selectList(new LambdaQueryWrapper<KbKnowledgeBase>()
+                        .select(KbKnowledgeBase::getId)
+                        .eq(KbKnowledgeBase::getOwnerId, userId))
+                .forEach(kb -> ids.add(kb.getId()));
+        vo.setKbIds(new ArrayList<>(ids));
+        return vo;
+    }
+
+    /** 供访客使用的 PUBLIC 库 id 集合（不依赖请求身份） */
+    public List<Long> getPublicKbIds() {
+        return getAccessibleKbs(null).getKbIds();
+    }
+
+    /**
+     * KB 可读性断言：不可读抛 BusinessException（403 语义）。
+     * 规则与 getAccessibleKbs 一致：PUBLIC/EMPLOYEE 对登录用户开放；
+     * MANAGEMENT 仅授权人/owner/ROLE_ADMIN；访客仅 PUBLIC。
+     */
+    public void assertKbReadable(Long kbId, Long userId) {
+        if (kbId == null) {
+            return;
+        }
+        KbKnowledgeBase kb = kbMapper.selectById(kbId);
+        if (kb == null) {
+            throw new BusinessException("知识库不存在");
+        }
+        String vis = kb.getVisibility() == null ? VIS_EMPLOYEE : kb.getVisibility();
+
+        if (VIS_PUBLIC.equals(vis)) {
+            return;
+        }
+        if (userId == null) {
+            throw new BusinessException("无权访问该知识库");
+        }
+        if (isAdmin(userId)
+                || userId.equals(kb.getOwnerId())
+                || kbUserAccessMapper.selectAccessLevel(kbId, userId) != null) {
+            return;
+        }
+        if (VIS_EMPLOYEE.equals(vis)) {
+            return;
+        }
+        throw new BusinessException("无权访问该知识库");
+    }
+
+    /**
+     * KB 可写性断言：在可读基础上要求 EDIT/ADMIN 级授权、owner 或 ROLE_ADMIN。
+     * 员工级/公共级 KB 对普通员工是只读的，写入由 owner/管理员/被授权者进行。
+     */
+    public void assertKbWritable(Long kbId, Long userId) {
+        assertKbReadable(kbId, userId);
+        if (userId == null) {
+            throw new BusinessException("未登录");
+        }
+        if (isAdmin(userId)) {
+            return;
+        }
+        KbKnowledgeBase kb = kbMapper.selectById(kbId);
+        if (kb != null && userId.equals(kb.getOwnerId())) {
+            return;
+        }
+        String level = kbUserAccessMapper.selectAccessLevel(kbId, userId);
+        if ("EDIT".equals(level) || "ADMIN".equals(level)) {
+            return;
+        }
+        throw new BusinessException("无权修改该知识库");
+    }
+
+    /** 授权管理权断言：仅 ROLE_ADMIN / KB owner / 该 KB ADMIN 级授权人可授予权限 */
+    private void assertCanManageAccess(Long kbId, Long userId) {
+        if (userId == null) {
+            throw new BusinessException("未登录");
+        }
+        if (isAdmin(userId)) {
+            return;
+        }
+        KbKnowledgeBase kb = kbMapper.selectById(kbId);
+        if (kb != null && userId.equals(kb.getOwnerId())) {
+            return;
+        }
+        if ("ADMIN".equals(kbUserAccessMapper.selectAccessLevel(kbId, userId))) {
+            return;
+        }
+        throw new BusinessException("仅知识库管理员可管理授权");
+    }
+
+    /** 写入 visibility 并保持 is_public 同步（PUBLIC=1 其余=0），兼容未迁移读取点 */
+    private void applyVisibility(KbKnowledgeBase kb, String visibility, Integer isPublic) {
+        if (visibility != null) {
+            if (!VALID_VISIBILITIES.contains(visibility)) {
+                throw new BusinessException("无效的可见级别: " + visibility + "（可选 PUBLIC/EMPLOYEE/MANAGEMENT）");
+            }
+            kb.setVisibility(visibility);
+            kb.setIsPublic(VIS_PUBLIC.equals(visibility) ? 1 : 0);
+        } else if (isPublic != null) {
+            // 旧字段兼容：未显式给 visibility 时按 is_public 推导
+            kb.setVisibility(isPublic == 1 ? VIS_PUBLIC : VIS_MANAGEMENT);
+            kb.setIsPublic(isPublic);
+        } else if (kb.getVisibility() == null) {
+            kb.setVisibility(VIS_EMPLOYEE);
+            if (kb.getIsPublic() == null) {
+                kb.setIsPublic(0);
+            }
+        }
     }
 
     private KbKnowledgeBaseVO toVO(KbKnowledgeBase kb) {
@@ -273,6 +473,7 @@ public class KnowledgeBaseManageService {
         vo.setOwnerId(kb.getOwnerId());
         vo.setDepartment(kb.getDepartment());
         vo.setIsPublic(kb.getIsPublic());
+        vo.setVisibilityLevel(kb.getVisibility());
         vo.setStatus(kb.getStatus());
 
         Long docCount = documentMapper.selectCount(

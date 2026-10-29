@@ -11,3 +11,4 @@ export const getAuthorizedUsers = (kbId) => request.get(`/api/knowledge-bases/${
 export const grantAccess = (kbId, data) => request.post(`/api/knowledge-bases/${kbId}/users`, data)
 export const revokeAccess = (kbId, userId) => request.delete(`/api/knowledge-bases/${kbId}/users/${userId}`)
 export const getAvailableUsers = () => request.get('/api/admin/users/list')
+export const getUserManagedKbs = (userId) => request.get(`/api/knowledge-bases/users/${userId}/managed`)

@@ -54,6 +54,12 @@
         <el-form-item label="状态">
           <el-switch v-model="form.status" :active-value="1" :inactive-value="0" />
         </el-form-item>
+        <el-form-item v-if="editingUser?.id" label="可访问知识库">
+          <el-select v-model="form.kbIds" multiple filterable placeholder="选择该用户可访问的管理级知识库" style="width: 100%">
+            <el-option v-for="kb in managedKbOptions" :key="kb.id" :label="kb.name" :value="kb.id" />
+          </el-select>
+          <div class="form-tip">公共级/员工级知识库所有登录用户默认可访问，此处仅管理管理级知识库的授权</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -78,6 +84,7 @@
 <script setup>
 import { ref, reactive, watch, onMounted } from 'vue'
 import { getUsers, createUser, updateUser, deleteUser as deleteUserApi, resetPassword } from '../../api/user'
+import { getKbs, getUserManagedKbs, grantAccess, revokeAccess } from '../../api/kb'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const loading = ref(false)
@@ -94,8 +101,20 @@ const pwdForm = reactive({ password: '' })
 const pwdFormRef = ref(null)
 
 const form = reactive({
-  username: '', password: '', nickname: '', email: '', phone: '', status: 1
+  username: '', password: '', nickname: '', email: '', phone: '', status: 1, kbIds: []
 })
+
+// ===== 可访问知识库（管理级 KB 授权，用户视角） =====
+const managedKbOptions = ref([])
+const initialKbIds = ref([])
+
+const loadManagedKbOptions = async () => {
+  try {
+    const res = await getKbs({ size: 1000 })
+    const kbs = Array.isArray(res.data) ? res.data : (res.data?.records || [])
+    managedKbOptions.value = kbs.filter(kb => kb.visibilityLevel === 'MANAGEMENT')
+  } catch (e) { console.error(e) }
+}
 
 const rules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
@@ -104,7 +123,7 @@ const rules = {
 }
 
 const resetForm = () => {
-  form.username = ''; form.password = ''; form.nickname = ''; form.email = ''; form.phone = ''; form.status = 1
+  form.username = ''; form.password = ''; form.nickname = ''; form.email = ''; form.phone = ''; form.status = 1; form.kbIds = []
 }
 
 const loadData = async () => {
@@ -122,10 +141,31 @@ const loadData = async () => {
   finally { loading.value = false }
 }
 
-const editUser = (row) => {
+const editUser = async (row) => {
   editingUser.value = row
-  Object.assign(form, { username: row.username, nickname: row.nickname || '', email: row.email || '', phone: row.phone || '', status: row.status ?? 1 })
+  Object.assign(form, { username: row.username, nickname: row.nickname || '', email: row.email || '', phone: row.phone || '', status: row.status ?? 1, kbIds: [] })
   dialogVisible.value = true
+  // 回显该用户已被授权的管理级知识库
+  try {
+    const res = await getUserManagedKbs(row.id)
+    initialKbIds.value = (res.data || []).map(Number)
+    form.kbIds = [...initialKbIds.value]
+  } catch (e) {
+    initialKbIds.value = []
+    console.error('加载用户授权知识库失败:', e)
+  }
+}
+
+const syncKbAccess = async (userId) => {
+  const toGrant = form.kbIds.filter(id => !initialKbIds.value.includes(id))
+  const toRevoke = initialKbIds.value.filter(id => !form.kbIds.includes(id))
+  for (const kbId of toGrant) {
+    await grantAccess(kbId, { userIds: [userId], accessLevel: 'READ' })
+  }
+  for (const kbId of toRevoke) {
+    await revokeAccess(kbId, userId)
+  }
+  return toGrant.length + toRevoke.length
 }
 
 const submitForm = async () => {
@@ -133,11 +173,13 @@ const submitForm = async () => {
   if (!valid) return
   try {
     if (editingUser.value?.id) {
-      await updateUser(editingUser.value.id, { ...form })
+      await updateUser(editingUser.value.id, { ...form, kbIds: undefined })
+      const changed = await syncKbAccess(editingUser.value.id)
+      ElMessage.success(changed > 0 ? `用户已更新，知识库授权同步 ${changed} 项` : '操作成功')
     } else {
-      await createUser({ ...form })
+      await createUser({ ...form, kbIds: undefined })
+      ElMessage.success('操作成功')
     }
-    ElMessage.success('操作成功')
     dialogVisible.value = false
     loadData()
   } catch (e) { ElMessage.error('操作失败') }
@@ -169,10 +211,11 @@ const submitResetPwd = async () => {
 }
 
 watch(search, () => { page.value = 1; loadData() })
-onMounted(loadData)
+onMounted(() => { loadData(); loadManagedKbOptions() })
 </script>
 
 <style scoped>
 .page { width: 100%; }
 .toolbar { display: flex; gap: 12px; align-items: center; }
+.form-tip { font-size: 12px; color: #909399; line-height: 1.5; margin-top: 4px; }
 </style>

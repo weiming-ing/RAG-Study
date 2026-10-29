@@ -16,4 +16,7 @@ public interface KbUserAccessMapper extends BaseMapper<KbUserAccess> {
 
     @Select("SELECT access_level FROM kb_user_access WHERE kb_id = #{kbId} AND user_id = #{userId}")
     String selectAccessLevel(@Param("kbId") Long kbId, @Param("userId") Long userId);
+
+    @Select("SELECT kb_id FROM kb_user_access WHERE user_id = #{userId}")
+    List<Long> selectKbIdsByUserId(@Param("userId") Long userId);
 }

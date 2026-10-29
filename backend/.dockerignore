@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/
+.venv/
+venv/
+.git/
+.gitignore
+*.md
+
+# 开发期临时脚本，不进交付镜像
+# （这些文件依赖 requests 等仅本机可用的包，且不应出现在客户环境）
+_*.py
+test_*.py

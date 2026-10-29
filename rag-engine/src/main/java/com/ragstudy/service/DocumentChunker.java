@@ -70,7 +70,12 @@ public class DocumentChunker {
         List<ChunkResult> childChunks = new ArrayList<>();
         List<ParentChunk> parentChunks = new ArrayList<>();
 
-        String cleanContent = content.replaceAll("\\s+", " ").trim();
+        String cleanContent = content
+                .replaceAll("[ \t]+", " ")           // 合并连续空格/Tab 为单个空格
+                .replaceAll("\n{3,}", "\n\n")        // 3 个以上换行 → 双换行（段落分隔）
+                .replaceAll(" +\n", "\n")            // 行尾空格清理
+                .replaceAll("\n +", "\n")            // 行首空格清理
+                .trim();
         int totalLength = cleanContent.length();
 
         if (totalLength == 0) {

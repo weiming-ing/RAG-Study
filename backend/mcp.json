@@ -5,7 +5,7 @@
   "mcp_version": "1.0.0",
   "server": {
     "command": "uvicorn",
-    "args": ["mcp_server:app", "--host", "0.0.0.0", "--port", "8003"],
+    "args": ["mcp_server:app", "--host", "0.0.0.0", "--port", "8005"],
     "env": {},
     "cwd": "."
   },

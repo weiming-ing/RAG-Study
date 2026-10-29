@@ -1,21 +1,43 @@
+# ============================================================================
+# RAG 助手 Python 编排层 — 运行必需依赖（精简集）
+# ============================================================================
+# 设计说明：Python 侧只负责 LLM 编排、Agent 工具调用与 API 代理；
+# 文档解析已从 Java Tika 升级为 Docling（结构化 Markdown 输出），
+# 切片、Embedding 向量化、向量存储与检索仍在 Java 引擎内完成。
+#
+# 因此以下依赖已移除（经全量 import 扫描确认零引用）：
+#   langchain / langchain-community / langchain-text-splitters  —— Python 时代遗留
+#   pypdf / python-docx / docx2txt                              —— 解析已迁移到 Java + Tika
+#   rank-bm25                                                   —— BM25 已迁移到 Java + Lucene
+#   passlib[bcrypt]                                             —— 代码直接使用 bcrypt
+#   aiofiles                                                    —— Starlette 已不再需要
+#   chromadb / sentence-transformers                            —— 见 requirements-fallback.txt
+#
+# 改动依赖后请运行：python deploy/verify-deps.py
+# 该脚本会校验「代码里 import 的包」与「这里声明的包」是否一致，
+# 既能防止漏装导致镜像启动即崩，也能防止重新引入死依赖。
+# ============================================================================
+
 python-dotenv>=1.1.1
 fastapi==0.115.0
 uvicorn[standard]==0.30.0
-langchain>=0.3.10
-langchain-community>=0.3.10
-langchain-text-splitters>=0.3.1
-chromadb>=1.0.0
-sentence-transformers>=3.1.0
-pypdf==4.3.1
-python-docx==1.1.2
-docx2txt==0.9
+pydantic>=2.0
+# Starlette 解析 multipart 表单（文档上传）时必需，代码中不被直接 import
 python-multipart==0.0.9
-aiosqlite==0.20.0
-aiofiles==24.1.0
 httpx==0.27.0
-rank-bm25==0.2.2
-redis>=5.0.0
+aiosqlite==0.20.0
 aiomysql>=0.2.0
-passlib[bcrypt]>=1.7.4
+redis>=5.0.0
 python-jose[cryptography]>=3.3.0
 bcrypt>=4.0.0
+# 授权文件签名校验（Ed25519）。原本已由 python-jose[cryptography] 传递引入，
+# 因为现在被代码直接 import，按"直接依赖显式声明"原则列出。
+cryptography>=42.0
+# 文档解析：Docling 将 PDF/Word/PPT/Excel 统一转为结构化 Markdown，
+# 保留表格、标题层级，替代 Java 侧 Apache Tika 纯文本提取
+docling>=2.0
+
+# 说明：main.py 还直接 import 了 starlette（响应类型与 ASGI Scope 标注）。
+# 它由 fastapi 传递提供，且 fastapi 自带兼容区间约束；此处不重复声明，
+# 以免两者约束冲突导致 pip 解析失败。该例外已在 deploy/verify-deps.py
+# 的 TRANSITIVE_PROVIDED 中登记原因。

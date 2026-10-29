@@ -17,6 +17,8 @@ public class KbKnowledgeBase {
     private Long ownerId;
     private String department;
     private Integer isPublic;
+    /** 可见级别: PUBLIC-公共级(含访客) EMPLOYEE-员工级 MANAGEMENT-管理级(仅授权人/owner/管理员) */
+    private String visibility;
     private String status;
 
     private Integer chunkSize;
@@ -59,6 +61,8 @@ public class KbKnowledgeBase {
     public void setDepartment(String department) { this.department = department; }
     public Integer getIsPublic() { return isPublic; }
     public void setIsPublic(Integer isPublic) { this.isPublic = isPublic; }
+    public String getVisibility() { return visibility; }
+    public void setVisibility(String visibility) { this.visibility = visibility; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
     public Integer getChunkSize() { return chunkSize; }

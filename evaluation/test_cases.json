@@ -1,0 +1,213 @@
+{
+  "meta": {
+    "created": "2026-10-19",
+    "total_cases": 20,
+    "kb_name": "企业知识库",
+    "description": "覆盖 HR 人事、财务报销、IT 故障、考勤请假、保密规范 5 个业务域，含 5 个历史翻车坏例子"
+  },
+  "test_cases": [
+    {
+      "id": 1,
+      "query": "员工请假流程是什么",
+      "expected_keywords": ["请假", "流程", "申请", "审批"],
+      "expected_facts": ["员工需在系统提交请假申请", "需要直属主管审批"],
+      "bad_example_answers": ["你可以直接不上班"],
+      "description": "制度流程类-请假",
+      "category": "HR",
+      "weight": 1.0
+    },
+    {
+      "id": 2,
+      "query": "报销需要什么材料",
+      "expected_keywords": ["报销", "发票", "材料", "单据"],
+      "expected_facts": ["需要提供正规发票", "填写报销申请单"],
+      "bad_example_answers": ["报销不需要任何材料"],
+      "description": "操作指南类-报销",
+      "category": "财务",
+      "weight": 1.0
+    },
+    {
+      "id": 3,
+      "query": "公司年假有多少天",
+      "expected_keywords": ["年假", "天数", "假期", "福利"],
+      "expected_facts": ["年假天数与工龄相关"],
+      "bad_example_answers": ["公司没有年假"],
+      "description": "事实类-年假天数",
+      "category": "HR",
+      "weight": 1.0
+    },
+    {
+      "id": 4,
+      "query": "入职需要准备哪些东西",
+      "expected_keywords": ["入职", "准备", "材料", "证件"],
+      "expected_facts": ["需要身份证", "需要学历证明", "需要银行卡"],
+      "bad_example_answers": ["什么都不用带"],
+      "description": "清单类-入职材料",
+      "category": "HR",
+      "weight": 1.0
+    },
+    {
+      "id": 5,
+      "query": "IT 部门联系方式",
+      "expected_keywords": ["IT", "联系", "电话", "邮箱"],
+      "expected_facts": ["IT部门有专门的联系方式"],
+      "bad_example_answers": ["IT部门不存在"],
+      "description": "精确匹配-IT联系",
+      "category": "IT",
+      "weight": 1.0
+    },
+    {
+      "id": 6,
+      "query": "加班费怎么计算",
+      "expected_keywords": ["加班", "工资", "计算", "小时"],
+      "expected_facts": ["工作日加班按1.5倍计算", "休息日加班按2倍计算"],
+      "bad_example_answers": ["加班没有加班费"],
+      "description": "制度流程类-加班费",
+      "category": "HR",
+      "weight": 1.0
+    },
+    {
+      "id": 7,
+      "query": "离职需要提前多久通知",
+      "expected_keywords": ["离职", "通知", "提前", "交接"],
+      "expected_facts": ["试用期提前3天", "正式员工提前30天"],
+      "bad_example_answers": ["随时可以走"],
+      "description": "制度流程类-离职",
+      "category": "HR",
+      "weight": 1.0
+    },
+    {
+      "id": 8,
+      "query": "公司保密规定有哪些",
+      "expected_keywords": ["保密", "机密", "违规", "处罚"],
+      "expected_facts": ["不得泄露公司机密信息", "违反保密规定会受到处罚"],
+      "bad_example_answers": ["公司没有保密规定"],
+      "description": "制度流程类-保密",
+      "category": "行政",
+      "weight": 1.0
+    },
+    {
+      "id": 9,
+      "query": "笔记本电脑坏了找谁修",
+      "expected_keywords": ["电脑", "维修", "IT", "报修"],
+      "expected_facts": ["联系IT部门报修"],
+      "bad_example_answers": ["自己买新的"],
+      "description": "操作指南类-IT报修",
+      "category": "IT",
+      "weight": 1.0
+    },
+    {
+      "id": 10,
+      "query": "绩效考核多久一次",
+      "expected_keywords": ["绩效", "考核", "季度", "年度"],
+      "expected_facts": ["有季度考核和年度考核"],
+      "bad_example_answers": ["从不考核"],
+      "description": "事实类-绩效考核",
+      "category": "HR",
+      "weight": 1.0
+    },
+    {
+      "id": 11,
+      "query": "出差报销标准是什么",
+      "expected_keywords": ["出差", "报销", "标准", "住宿", "交通"],
+      "expected_facts": ["不同级别有不同标准", "需要提前申请出差"],
+      "bad_example_answers": ["出差费用自己承担"],
+      "description": "操作指南类-出差报销",
+      "category": "财务",
+      "weight": 1.0
+    },
+    {
+      "id": 12,
+      "query": "社保公积金怎么查",
+      "expected_keywords": ["社保", "公积金", "查询", "缴纳"],
+      "expected_facts": ["公司按规定缴纳社保公积金"],
+      "bad_example_answers": ["公司不交社保"],
+      "description": "操作指南类-社保查询",
+      "category": "HR",
+      "weight": 1.0
+    },
+    {
+      "id": 13,
+      "query": "VPN怎么连接",
+      "expected_keywords": ["VPN", "连接", "远程", "办公"],
+      "expected_facts": ["需要使用公司提供的VPN客户端"],
+      "bad_example_answers": ["不需要VPN"],
+      "description": "操作指南类-VPN连接",
+      "category": "IT",
+      "weight": 1.0
+    },
+    {
+      "id": 14,
+      "query": "公司培训有哪些",
+      "expected_keywords": ["培训", "入职", "技能", "安全"],
+      "expected_facts": ["有入职培训", "有安全培训"],
+      "bad_example_answers": ["没有培训"],
+      "description": "事实类-培训",
+      "category": "HR",
+      "weight": 1.0
+    },
+    {
+      "id": 15,
+      "query": "会议室怎么预约",
+      "expected_keywords": ["会议室", "预约", "系统", "时间"],
+      "expected_facts": ["通过OA系统预约会议室"],
+      "bad_example_answers": ["直接占用了就行"],
+      "description": "操作指南类-会议室预约",
+      "category": "行政",
+      "weight": 1.0
+    },
+    {
+      "id": 16,
+      "query": "啊",
+      "expected_keywords": [],
+      "expected_facts": [],
+      "bad_example_answers": [],
+      "description": "🟡 坏例子-无意义输入",
+      "category": "边界",
+      "weight": 0.5,
+      "expect_graceful": true
+    },
+    {
+      "id": 17,
+      "query": "明天天气怎么样",
+      "expected_keywords": [],
+      "expected_facts": [],
+      "bad_example_answers": [],
+      "description": "🟡 坏例子-超出知识库范围",
+      "category": "边界",
+      "weight": 0.5,
+      "expect_rejection": true
+    },
+    {
+      "id": 18,
+      "query": "你和ChatGPT谁厉害",
+      "expected_keywords": [],
+      "expected_facts": [],
+      "bad_example_answers": [],
+      "description": "🟡 坏例子-闲聊类（不应检索）",
+      "category": "边界",
+      "weight": 0.5,
+      "expect_chat": true
+    },
+    {
+      "id": 19,
+      "query": "转正需要什么条件",
+      "expected_keywords": ["转正", "试用期", "考核", "评估"],
+      "expected_facts": ["试用期通常3-6个月", "需要通过考核评估"],
+      "bad_example_answers": ["不需要任何条件"],
+      "description": "制度流程类-转正",
+      "category": "HR",
+      "weight": 1.0
+    },
+    {
+      "id": 20,
+      "query": "工资什么时候发",
+      "expected_keywords": ["工资", "发薪", "日期", "银行"],
+      "expected_facts": ["每月固定日期发薪"],
+      "bad_example_answers": ["想什么时候发就什么时候发"],
+      "description": "事实类-发薪日",
+      "category": "HR",
+      "weight": 1.0
+    }
+  ]
+}

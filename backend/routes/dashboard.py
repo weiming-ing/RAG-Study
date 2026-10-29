@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from typing import Optional
 
 from routes.auth import get_current_user
+from utils import java_http
 
 JAVA_BACKEND = os.getenv("JAVA_BACKEND_URL", "http://localhost:8002")
 
@@ -22,7 +23,33 @@ async def proxy_to_java(path: str, request: Request, params: dict = None):
 
             url = f"{JAVA_BACKEND}/api/dashboard/{path}"
             resp = await client.get(url, params=params, headers=headers)
+
+            if resp.status_code == 403:
+                return JSONResponse(status_code=403, content={
+                    "success": False,
+                    "data": None,
+                    "error": "无权限访问，请检查认证凭据是否有效"
+                })
+            if resp.status_code == 401:
+                return JSONResponse(status_code=401, content={
+                    "success": False,
+                    "data": None,
+                    "error": "未认证，请重新登录"
+                })
+            if resp.status_code >= 400:
+                return JSONResponse(content={
+                    "success": False,
+                    "data": None,
+                    "error": f"后端返回错误 (HTTP {resp.status_code})"
+                })
+
             java_resp = resp.json()
+            if not isinstance(java_resp, dict):
+                return JSONResponse(content={
+                    "success": False,
+                    "data": None,
+                    "error": "后端返回格式异常"
+                })
             
             # Java 格式: {code: 0, message: "success", data: ...}
             # 转换为 Python 前端期望格式: {success: true/false, data: ..., error: ...}
@@ -139,17 +166,12 @@ async def resolve_alert(
 
 # ========== 数据记录代理接口（供 Python 业务层调用） ==========
 
-async def _post_to_java(path: str, body: dict):
-    """POST 请求代理到 Java 后端"""
+async def _post_to_java(path: str, body: dict, timeout: float = 10.0):
+    """POST 请求代理到 Java 后端（复用共享连接池，不逐次建连）"""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{JAVA_BACKEND}/api/dashboard/{path}",
-                json=body,
-                headers={"Content-Type": "application/json"},
-            )
-            if resp.status_code != 200:
-                print(f"[dashboard proxy] POST {path} 失败: HTTP {resp.status_code}")
+        resp = await java_http.post(f"/api/dashboard/{path}", body, timeout=timeout)
+        if resp.status_code != 200:
+            print(f"[dashboard proxy] POST {path} 失败: HTTP {resp.status_code}")
     except Exception as e:
         print(f"[dashboard proxy] POST {path} 异常: {e}")
 
@@ -177,4 +199,17 @@ async def record_token_usage(kb_id: str, user_id: int, prompt_tokens: int, compl
         "userId": user_id,
         "promptTokens": prompt_tokens,
         "completionTokens": completion_tokens,
+    })
+
+
+async def record_batch(api_calls: list, doc_hits: list, token_usages: list):
+    """一次 POST 上报整批统计（Java 侧单个 @Async 线程串行落库）。
+
+    替代此前 api-call → N×doc-hit → token-usage 逐条串行 POST 的模式，
+    网络往返从最多 22 次降为 1 次。
+    """
+    await _post_to_java("record/batch", {
+        "apiCalls": api_calls,
+        "docHits": doc_hits,
+        "tokenUsages": token_usages,
     })

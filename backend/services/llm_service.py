@@ -13,6 +13,7 @@ KNOWLEDGE_SYSTEM_PROMPT = """你是一个专业的企业内部知识库智能客
 4. 诚实透明：如果参考资料和你的知识都无法回答，请明确告知用户
 5. 专业简洁：使用专业但易懂的语言，保持回答清晰有条理
 6. 中文回答：始终使用中文回答
+7. 严禁重复对话历史：你的回答中绝对不能出现之前对话的内容（任何之前的问答对）。只针对当前这一条用户问题给出回答，不要复述、总结或引用之前的任何对话
 
 ## 回答格式
 - 先给出核心答案
@@ -64,9 +65,14 @@ class LLMService:
         messages = [{"role": "system", "content": system_prompt}]
 
         if history:
-            recent = history[-6:]
+            recent = history[-4:]
+            history_lines = ["【对话历史记录，仅供上下文理解，请勿在任何情况下重复以下内容】"]
             for msg in recent:
-                messages.append({"role": msg["role"], "content": msg["content"]})
+                role_label = "用户" if msg["role"] == "user" else "助手"
+                history_lines.append(f"{role_label}：{msg['content']}")
+            history_text = "\n".join(history_lines)
+            messages.append({"role": "user", "content": history_text})
+            messages.append({"role": "assistant", "content": "已理解。我将只针对最新的用户问题进行回答，不会复述任何历史对话。"})
 
         user_content = ""
         if context.strip():

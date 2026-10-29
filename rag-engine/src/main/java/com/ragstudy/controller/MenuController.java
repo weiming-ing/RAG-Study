@@ -27,6 +27,12 @@ public class MenuController {
         return ApiResponse.success(menuService.getMenuTree());
     }
 
+    @GetMapping
+    @PreAuthorize("hasRole('ROLE_ADMIN')")
+    public ApiResponse<List<MenuVO>> list() {
+        return ApiResponse.success(menuService.getMenuTree());
+    }
+
     @GetMapping("/user")
     public ApiResponse<List<MenuVO>> userMenus() {
         Long userId = SecurityUtils.getCurrentUserId();

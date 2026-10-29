@@ -32,9 +32,11 @@ public class ConversationController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Integer feedback,
             @RequestParam(required = false) String startDate,
-            @RequestParam(required = false) String endDate) {
+            @RequestParam(required = false) String endDate,
+            @RequestParam(required = false) String sessionId,
+            @RequestParam(defaultValue = "desc") String sortOrder) {
         return ApiResponse.success(conversationLogService.list(
-                pageNum, pageSize, kbId, userId, keyword, feedback, startDate, endDate));
+                pageNum, pageSize, kbId, userId, keyword, feedback, startDate, endDate, sessionId, sortOrder));
     }
 
     @GetMapping("/grouped")

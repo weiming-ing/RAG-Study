@@ -9,9 +9,6 @@ const state = {
     isGenerating: false,
     currentAssistantMsg: null,
     kbPanelOpen: false,
-    activeKbTab: 'documents',
-    editingChunkId: null,
-    editingManualId: null,
     autoRefreshInterval: null,
     abortController: null,
     agentMode: false,
@@ -44,9 +41,7 @@ const els = {
     btnToggleKb: document.getElementById('btn-toggle-kb'),
     btnCloseKb: document.getElementById('btn-close-kb'),
     kbPanel: document.getElementById('kb-panel'),
-    kbDocList: document.getElementById('kb-doc-list'),
-    kbManualList: document.getElementById('kb-manual-list'),
-    btnAddManual: document.getElementById('btn-add-manual'),
+    kbModules: document.getElementById('kb-modules'),
     statusIndicator: document.getElementById('status-indicator'),
     sidebar: document.getElementById('sidebar'),
     inputHint: document.querySelector('.input-hint'),
@@ -58,21 +53,6 @@ const els = {
     chunkModalTitle: document.getElementById('chunk-modal-title'),
     chunkModalBody: document.getElementById('chunk-modal-body'),
     btnCloseChunkModal: document.getElementById('btn-close-chunk-modal'),
-    editModal: document.getElementById('edit-modal'),
-    editModalTitle: document.getElementById('edit-modal-title'),
-    editMeta: document.getElementById('edit-meta'),
-    editContent: document.getElementById('edit-content'),
-    btnSaveEdit: document.getElementById('btn-save-edit'),
-    btnCancelEdit: document.getElementById('btn-cancel-edit'),
-    btnCloseEditModal: document.getElementById('btn-close-edit-modal'),
-    manualModal: document.getElementById('manual-modal'),
-    manualModalTitle: document.getElementById('manual-modal-title'),
-    manualTitle: document.getElementById('manual-title'),
-    manualContent: document.getElementById('manual-content'),
-    manualTags: document.getElementById('manual-tags'),
-    btnSaveManual: document.getElementById('btn-save-manual'),
-    btnCancelManual: document.getElementById('btn-cancel-manual'),
-    btnCloseManualModal: document.getElementById('btn-close-manual-modal'),
     statDocs: document.getElementById('stat-docs'),
     statChunks: document.getElementById('stat-chunks'),
     statSize: document.getElementById('stat-size'),
@@ -284,7 +264,6 @@ function bindAppEvents() {
     els.btnToggleSidebar.addEventListener('click', () => els.sidebar.classList.toggle('open'));
     els.btnToggleKb.addEventListener('click', toggleKbPanel);
     els.btnCloseKb.addEventListener('click', toggleKbPanel);
-    els.btnAddManual.addEventListener('click', openManualModal);
     els.btnKbSearch.addEventListener('click', searchKnowledgeBase);
     els.kbSearchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
@@ -297,197 +276,115 @@ function bindAppEvents() {
         if (e.target === els.chunkModal) closeChunkModal();
     });
     els.chunkModalBody.addEventListener('click', function (e) {
-        var btn = e.target.closest('.chunk-edit-btn');
-        if (btn) {
-            var chunkItem = btn.closest('.chunk-item');
-            if (!chunkItem) return;
-            var chunkId = chunkItem.dataset.chunkId;
-            var content = chunkItem.querySelector('.chunk-content').textContent;
-            var filename = els.chunkModalTitle.textContent.replace('文档分块 - ', '');
-            var chunkBadge = chunkItem.querySelector('.chunk-badge');
-            var chunkIndex = chunkBadge ? chunkBadge.textContent.replace('分块 ', '') : '1';
-            var pageEl = chunkItem.querySelector('.chunk-page');
-            var page = pageEl ? parseInt(pageEl.textContent.replace('第 ', '').replace(' 页', '')) : 0;
-            openChunkEdit(chunkId, content, filename, chunkIndex, page);
-        }
         var closeBtn = e.target.closest('.modal-close-btn');
         if (closeBtn) closeChunkModal();
     });
     document.addEventListener('keydown', function (e) {
         if (e.key === 'Escape') {
-            if (els.editModal.style.display === 'flex') {
-                closeEditModal();
-            } else if (els.manualModal.style.display === 'flex') {
-                closeManualModal();
-            } else if (els.chunkModal.style.display === 'flex') {
+            if (els.chunkModal.style.display === 'flex') {
                 closeChunkModal();
             }
         }
     });
-    els.btnCloseEditModal.addEventListener('click', closeEditModal);
-    els.btnCancelEdit.addEventListener('click', closeEditModal);
-    els.editModal.addEventListener('click', (e) => {
-        if (e.target === els.editModal) closeEditModal();
-    });
-    els.btnSaveEdit.addEventListener('click', saveChunkEdit);
-    els.btnCloseManualModal.addEventListener('click', closeManualModal);
-    els.btnCancelManual.addEventListener('click', closeManualModal);
-    els.manualModal.addEventListener('click', (e) => {
-        if (e.target === els.manualModal) closeManualModal();
-    });
-    els.btnSaveManual.addEventListener('click', saveManualEntry);
 
-    document.querySelectorAll('.kb-tab').forEach(tab => {
-        tab.addEventListener('click', () => switchKbTab(tab.dataset.tab));
-    });
-
-    els.kbDocList.addEventListener('click', (e) => {
-        const item = e.target.closest('.kb-doc-item');
+    els.kbModules.addEventListener('click', (e) => {
+        if (e.target.closest('.kb-search-back')) {
+            renderBrowse(state.kbModulesData || []);
+            return;
+        }
+        const folder = e.target.closest('.kb-tree-folder');
+        if (folder) {
+            const node = folder.closest('.kb-tree-node');
+            const children = node.querySelector('.kb-tree-children');
+            const caret = folder.querySelector('.kb-tree-caret');
+            const collapsed = children.style.display === 'none';
+            children.style.display = collapsed ? '' : 'none';
+            caret.textContent = collapsed ? '▾' : '▸';
+            return;
+        }
+        const item = e.target.closest('.kb-tree-doc');
         if (!item) return;
-        const docId = item.dataset.docId;
-        const filename = item.dataset.docFilename;
         if (e.target.closest('.doc-preview-btn')) {
-            previewDocument(docId, filename);
+            previewDocument(item.dataset.kbId, item.dataset.docId, item.dataset.docFilename);
         }
     });
-
-    els.kbManualList.addEventListener('click', (e) => {
-        const item = e.target.closest('.kb-manual-item');
-        if (!item) return;
-        const entryId = item.dataset.entryId;
-        if (e.target.closest('.manual-edit-btn')) {
-            editManualEntry(entryId);
-        } else if (e.target.closest('.doc-delete-btn')) {
-            deleteManualEntry(entryId);
-        }
-    });
-}
-
-function switchKbTab(tab) {
-    state.activeKbTab = tab;
-    document.querySelectorAll('.kb-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-    document.querySelectorAll('.kb-tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${tab}`));
-    if (tab === 'manual') loadManualEntries();
-    else loadDocuments();
 }
 
 async function toggleKbPanel() {
     state.kbPanelOpen = !state.kbPanelOpen;
     els.kbPanel.style.display = state.kbPanelOpen ? 'flex' : 'none';
     if (state.kbPanelOpen) {
-        await loadStatistics();
-        if (state.activeKbTab === 'manual') loadManualEntries();
-        else loadDocuments();
+        await loadBrowse();
         startAutoRefresh();
     } else {
         stopAutoRefresh();
     }
 }
 
-async function loadStatistics() {
+async function loadBrowse() {
     try {
-        const resp = await apiFetch(`${API_BASE}/knowledge/statistics`);
-        const data = await resp.json();
-        if (data.success) {
-            els.statDocs.textContent = data.data.total_documents;
-            els.statChunks.textContent = data.data.total_chunks;
-            els.statSize.textContent = formatFileSize(data.data.total_size);
-        }
-    } catch (e) {
-        console.error('加载统计失败:', e);
-        els.statDocs.textContent = '--';
-        els.statChunks.textContent = '--';
-        els.statSize.textContent = '--';
-    }
-}
-
-function startAutoRefresh() {
-    stopAutoRefresh();
-    if (els.kbAutoRefresh) {
-        els.kbAutoRefresh.classList.remove('paused');
-    }
-    state.autoRefreshInterval = setInterval(async () => {
-        await loadStatistics();
-        if (state.activeKbTab === 'manual') {
-            await loadManualEntries();
-        } else {
-            await loadDocuments();
-        }
-    }, 600000);
-}
-
-function stopAutoRefresh() {
-    if (state.autoRefreshInterval) {
-        clearInterval(state.autoRefreshInterval);
-        state.autoRefreshInterval = null;
-    }
-    if (els.kbAutoRefresh) {
-        els.kbAutoRefresh.classList.add('paused');
-    }
-}
-
-async function loadDocuments() {
-    try {
-        const resp = await apiFetch(`${API_BASE}/knowledge/documents`);
+        const resp = await apiFetch(`${API_BASE}/kb/browse`);
         if (!resp.ok) {
             const errText = await resp.text().catch(() => '');
-            console.error('加载文档列表失败: HTTP', resp.status, errText);
-            els.kbDocList.innerHTML = '<p class="empty-hint">加载失败: 服务异常 (HTTP ' + resp.status + ')</p>';
-            toast('加载文档列表失败: 服务异常', 'error');
+            console.error('加载知识库失败: HTTP', resp.status, errText);
+            els.kbModules.innerHTML = '<p class="empty-hint">加载失败: 服务异常 (HTTP ' + resp.status + ')</p>';
+            toast('加载知识库失败: 服务异常', 'error');
             return;
         }
         const data = await resp.json();
-        const pageData = data.data || {};
-        const docs = pageData.records || (Array.isArray(data.data) ? data.data : []);
-        els.kbDocList.innerHTML = docs.length === 0
-            ? '<p class="empty-hint">暂无文档，请通过管理平台上传</p>'
-            : docs.map(d => `
-                <div class="kb-doc-item" data-doc-id="${d.id}" data-doc-filename="${escapeHtml(d.filename)}">
-                    <div class="doc-name">
-                        <span class="doc-icon">${getFileIcon(d.filename)}</span>
-                        ${escapeHtml(d.filename)}
-                    </div>
-                    <div class="doc-meta">
-                        <span>${formatFileSize(d.size)} · ${d.chunks || 0} 个分块</span>
-                        <span class="doc-actions">
-                            <button class="doc-action doc-preview-btn">预览</button>
-                        </span>
-                    </div>
-                </div>
-            `).join('');
+        const modules = data.data || [];
+
+        // 统计：可见知识库数 / 文档总数 / 分块总数（均基于有权限的范围）
+        const kbCount = modules.length;
+        const docCount = modules.reduce((s, m) => s + (m.docs || []).length, 0);
+        const chunkCount = modules.reduce((s, m) => s + (m.docs || []).reduce((x, d) => x + (d.chunkCount || d.chunks || 0), 0), 0);
+        els.statDocs.textContent = kbCount;
+        els.statChunks.textContent = docCount;
+        els.statSize.textContent = chunkCount;
+
+        state.kbModulesData = modules;
+        renderBrowse(modules);
     } catch (e) {
-        console.error('加载文档列表失败:', e);
-        els.kbDocList.innerHTML = '<p class="empty-hint">加载失败，请检查网络连接</p>';
-        toast('加载文档列表失败: ' + (e.message || '网络错误'), 'error');
+        console.error('加载知识库失败:', e);
+        els.kbModules.innerHTML = '<p class="empty-hint">加载失败，请检查网络连接</p>';
+        toast('加载知识库失败: ' + (e.message || '网络错误'), 'error');
     }
 }
 
-async function loadManualEntries() {
-    try {
-        const resp = await apiFetch(`${API_BASE}/knowledge/manual`);
-        const data = await resp.json();
-        const entries = data.data || [];
-        els.kbManualList.innerHTML = entries.length === 0
-            ? '<p class="empty-hint">暂无手动条目</p>'
-            : entries.map(e => `
-                <div class="kb-manual-item" data-entry-id="${e.id}">
-                    <div class="manual-title">${escapeHtml(e.title)}</div>
-                    <div class="manual-preview">${escapeHtml(e.content.substring(0, 120))}${e.content.length > 120 ? '...' : ''}</div>
-                    ${e.tags && e.tags.length > 0 ? `
-                        <div class="manual-tags">${e.tags.map(t => `<span class="manual-tag">${escapeHtml(t)}</span>`).join('')}</div>
-                    ` : ''}
-                    <div class="manual-meta">
-                        <span>${e.updated_at ? new Date(e.updated_at).toLocaleDateString() : ''}</span>
-                        <span class="doc-actions">
-                            <button class="doc-action manual-edit-btn">编辑</button>
-                            <button class="doc-action doc-delete-btn">删除</button>
-                        </span>
-                    </div>
-                </div>
-            `).join('');
-    } catch (e) {
-        console.error('加载手动条目失败:', e);
+function renderBrowse(modules) {
+    if (modules.length === 0) {
+        els.kbModules.innerHTML = '<p class="empty-hint">暂无可访问的知识库</p>';
+        return;
     }
+    // 目录树样式：知识库为文件夹节点（可折叠），文档为其子条目
+    els.kbModules.innerHTML = modules.map((m, idx) => {
+        const docs = m.docs || [];
+        const visTag = m.visibility
+            ? `<span class="kb-vis-tag kb-vis-${(m.visibility || '').toLowerCase()}">${escapeHtml(m.visibilityText || m.visibility)}</span>`
+            : '';
+        const docsHtml = docs.map(d => `
+            <div class="kb-tree-doc" data-kb-id="${m.id}" data-doc-id="${d.id}" data-doc-filename="${escapeHtml(d.filename || d.name || '')}">
+                <span class="kb-tree-indent"></span>
+                <span class="doc-icon">${getFileIcon(d.filename || d.name || '')}</span>
+                <span class="kb-tree-doc-name" title="${escapeHtml(d.filename || d.name || '')}">${escapeHtml(d.filename || d.name || '')}</span>
+                <span class="kb-tree-doc-meta">${d.chunkCount || d.chunks || 0} 块 · ${formatFileSize(d.fileSize || d.size || 0)}</span>
+                <button class="doc-action doc-preview-btn">预览</button>
+            </div>
+        `).join('');
+        return `
+            <div class="kb-tree-node" data-kb-name="${escapeHtml((m.name || '') + ' ' + (m.description || ''))}">
+                <div class="kb-tree-folder" data-node-idx="${idx}">
+                    <span class="kb-tree-caret">▾</span>
+                    <span class="kb-tree-folder-icon">📁</span>
+                    <span class="kb-tree-folder-name">${escapeHtml(m.name || ('知识库 #' + m.id))}</span>
+                    ${visTag}
+                    <span class="kb-tree-count">${docs.length} 篇</span>
+                </div>
+                ${m.description ? `<div class="kb-tree-desc">${escapeHtml(m.description)}</div>` : ''}
+                <div class="kb-tree-children">${docsHtml}</div>
+            </div>
+        `;
+    }).join('');
 }
 
 function getFileIcon(filename) {
@@ -496,34 +393,59 @@ function getFileIcon(filename) {
     return icons[ext] || '📄';
 }
 
-async function previewDocument(docId, filename) {
+async function previewDocument(kbId, docId, filename) {
     els.chunkModalTitle.textContent = `文档分块 - ${filename}`;
     els.chunkModalBody.innerHTML = '<div class="loading-spinner">加载中...</div>';
     els.chunkModal.classList.remove('modal-hidden');
     els.chunkModal.style.display = 'flex';
     try {
-        const resp = await apiFetch(`${API_BASE}/knowledge/documents/${docId}/chunks`);
+        const resp = await apiFetch(`${API_BASE}/kb/browse/${kbId}/documents/${docId}/chunks`);
         const data = await resp.json();
         if (data.success && data.data.length > 0) {
-            els.chunkModalBody.innerHTML = data.data.map((chunk, i) => {
-                const isLong = chunk.is_truncated;
-                const preview = escapeHtml(chunk.content_preview || chunk.content);
-                const full = escapeHtml(chunk.content);
-                const chunkId = `${docId}_${chunk.chunk_index}`;
-                return `
-                <div class="chunk-item" data-chunk-id="${chunkId}">
-                    <div class="chunk-header">
-                        <span class="chunk-badge">分块 ${chunk.chunk_index + 1}</span>
-                        ${chunk.page > 0 ? `<span class="chunk-page">第 ${chunk.page} 页</span>` : ''}
-                        <button class="chunk-edit-btn">回写编辑</button>
-                    </div>
-                    <div class="chunk-content${isLong ? ' chunk-content-collapsed' : ''}" id="chunk-content-${chunkId}">
-                        <span class="chunk-text-preview">${preview}</span>
-                        ${isLong ? `<span class="chunk-text-full" style="display:none;">${full}</span>` : ''}
-                    </div>
-                    ${isLong ? `<button class="chunk-expand-btn" data-chunk-id="${chunkId}" onclick="toggleChunkExpand('${chunkId}')">展开全部 ▼</button>` : ''}
-                </div>
-            `}).join('') + '<div class="modal-actions"><button class="btn btn-outline modal-close-btn">关闭</button></div>';
+            var chunks = data.data;
+
+            var sortedChunks = chunks.slice().sort(function(a, b) { return (a.chunk_index || 0) - (b.chunk_index || 0); });
+            var mergedParts = [];
+            for (var ci = 0; ci < sortedChunks.length; ci++) {
+                var text = (sortedChunks[ci].content || '').trim();
+                if (!text) continue;
+                if (ci > 0) {
+                    text = removeOverlap(mergedParts[mergedParts.length - 1], text);
+                }
+                mergedParts.push(text);
+            }
+            var mergedMd = mergedParts.join('\n\n');
+            var mergedHtml = '<div class="chunk-merged-preview">' +
+                '<div class="chunk-merged-header">' +
+                    '<span class="chunk-merged-title">文档合并预览</span>' +
+                    '<span class="chunk-merged-count">共 ' + chunks.length + ' 个分块</span>' +
+                '</div>' +
+                '<div class="chunk-merged-body">' + renderMarkdown(mergedMd) + '</div>' +
+            '</div>';
+
+            var chunkItems = sortedChunks.map(function(chunk, i) {
+                var isLong = chunk.is_truncated;
+                var preview = escapeHtml(chunk.content_preview || chunk.content);
+                var full = renderMarkdown(chunk.content);
+                var chunkId = docId + '_' + chunk.chunk_index;
+                return (
+                '<div class="chunk-item" data-chunk-id="' + chunkId + '">' +
+                    '<div class="chunk-header">' +
+                        '<span class="chunk-badge">分块 ' + (chunk.chunk_index + 1) + '</span>' +
+                        (chunk.page > 0 ? '<span class="chunk-page">第 ' + chunk.page + ' 页</span>' : '') +
+                    '</div>' +
+                    '<div class="chunk-content' + (isLong ? ' chunk-content-collapsed' : '') + '" id="chunk-content-' + chunkId + '">' +
+                        '<span class="chunk-text-preview">' + preview + '</span>' +
+                        (isLong ? '<span class="chunk-text-full" style="display:none;">' + full + '</span>' : '') +
+                    '</div>' +
+                    (isLong ? '<button class="chunk-expand-btn" data-chunk-id="' + chunkId + '" onclick="toggleChunkExpand(\'' + chunkId + '\')">展开全部 ▼</button>' : '') +
+                '</div>'
+            )}).join('');
+
+            els.chunkModalBody.innerHTML = mergedHtml +
+                '<div class="chunk-divider"><span>分块明细</span></div>' +
+                chunkItems +
+                '<div class="modal-actions"><button class="btn btn-outline modal-close-btn">关闭</button></div>';
         } else {
             els.chunkModalBody.innerHTML = '<p class="empty-hint">暂无分块数据</p><div class="modal-actions"><button class="btn btn-outline modal-close-btn">关闭</button></div>';
         }
@@ -557,161 +479,6 @@ function closeChunkModal() {
     els.chunkModal.classList.add('modal-hidden');
 }
 
-function openChunkEdit(chunkId, content, filename, chunkIndex, page) {
-    state.editingChunkId = chunkId;
-    state.editingManualId = null;
-    els.editModalTitle.textContent = '回写编辑分块';
-    els.editMeta.innerHTML = `
-        <strong>${escapeHtml(filename)}</strong> · 分块 ${chunkIndex}${page > 0 ? ` · 第 ${page} 页` : ''}
-    `;
-    els.editContent.value = content;
-    els.editModal.style.display = 'flex';
-    els.editContent.focus();
-}
-
-function closeEditModal() {
-    els.editModal.style.display = 'none';
-    state.editingChunkId = null;
-    state.editingManualId = null;
-}
-
-async function saveChunkEdit() {
-    const content = els.editContent.value.trim();
-    if (!content) {
-        toast('内容不能为空', 'warning');
-        return;
-    }
-
-    const chunkId = state.editingChunkId;
-    if (!chunkId) return;
-
-    els.btnSaveEdit.disabled = true;
-    els.btnSaveEdit.textContent = '保存中...';
-
-    try {
-        const resp = await apiFetch(`${API_BASE}/knowledge/chunks/${chunkId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content }),
-        });
-        const data = await resp.json().catch(() => null);
-        if (data && data.success) {
-            toast('回写成功，向量已更新', 'success');
-            closeEditModal();
-            closeChunkModal();
-        } else {
-            const errMsg = data ? (data.error || data.detail || '回写失败') : '服务器异常';
-            toast(errMsg, 'error');
-        }
-    } catch (e) {
-        toast(`回写失败: ${e.message}`, 'error');
-    } finally {
-        els.btnSaveEdit.disabled = false;
-        els.btnSaveEdit.textContent = '保存回写';
-    }
-}
-
-function openManualModal(entryId = null) {
-    state.editingManualId = entryId;
-    state.editingChunkId = null;
-
-    if (entryId) {
-        els.manualModalTitle.textContent = '编辑手动条目';
-        els.btnSaveManual.textContent = '更新';
-        apiFetch(`${API_BASE}/knowledge/manual`)
-            .then(r => r.json())
-            .then(data => {
-                const entry = (data.data || []).find(e => e.id === entryId);
-                if (entry) {
-                    els.manualTitle.value = entry.title || '';
-                    els.manualContent.value = entry.content || '';
-                    els.manualTags.value = (entry.tags || []).join(', ');
-                }
-            })
-            .catch(() => {});
-    } else {
-        els.manualModalTitle.textContent = '添加手动条目';
-        els.btnSaveManual.textContent = '保存';
-        els.manualTitle.value = '';
-        els.manualContent.value = '';
-        els.manualTags.value = '';
-    }
-    els.manualModal.style.display = 'flex';
-    els.manualTitle.focus();
-}
-
-function closeManualModal() {
-    els.manualModal.style.display = 'none';
-    state.editingManualId = null;
-}
-
-async function saveManualEntry() {
-    const title = els.manualTitle.value.trim();
-    const content = els.manualContent.value.trim();
-    const tagsStr = els.manualTags.value.trim();
-
-    if (!title || !content) {
-        toast('标题和内容不能为空', 'warning');
-        return;
-    }
-
-    const tags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(Boolean) : [];
-    els.btnSaveManual.disabled = true;
-    els.btnSaveManual.textContent = '保存中...';
-
-    try {
-        let resp;
-        if (state.editingManualId) {
-            resp = await apiFetch(`${API_BASE}/knowledge/manual/${state.editingManualId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title, content, tags }),
-            });
-        } else {
-            resp = await apiFetch(`${API_BASE}/knowledge/manual`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title, content, tags }),
-            });
-        }
-
-        const data = await resp.json().catch(() => null);
-        if (data && data.success) {
-            toast(state.editingManualId ? '手动条目已更新' : '手动条目已添加', 'success');
-            closeManualModal();
-            await loadManualEntries();
-            await loadStatistics();
-        } else {
-            const errMsg = data ? (data.error || data.detail || '操作失败') : '服务器异常';
-            toast(errMsg, 'error');
-        }
-    } catch (e) {
-        toast(`操作失败: ${e.message}`, 'error');
-    } finally {
-        els.btnSaveManual.disabled = false;
-        els.btnSaveManual.textContent = state.editingManualId ? '更新' : '保存';
-    }
-}
-
-async function editManualEntry(entryId) {
-    openManualModal(entryId);
-}
-
-async function deleteManualEntry(entryId) {
-    if (!confirm('确定删除此手动条目？')) return;
-    try {
-        const resp = await apiFetch(`${API_BASE}/knowledge/manual/${entryId}`, { method: 'DELETE' });
-        const data = await resp.json().catch(() => null);
-        if (data && data.success) {
-            toast('手动条目已删除', 'success');
-        }
-        await loadManualEntries();
-        await loadStatistics();
-    } catch (e) {
-        toast(`删除失败: ${e.message}`, 'error');
-    }
-}
-
 async function searchKnowledgeBase() {
     const query = els.kbSearchInput.value.trim();
     if (!query) return;
@@ -720,7 +487,8 @@ async function searchKnowledgeBase() {
     els.kbSearchInput.disabled = true;
 
     try {
-        const resp = await apiFetch(`${API_BASE}/knowledge/search?q=${encodeURIComponent(query)}`);
+        // 权限过滤：仅检索当前用户可访问的知识库（服务端强制）
+        const resp = await apiFetch(`${API_BASE}/kb/browse/search?q=${encodeURIComponent(query)}`);
         const data = await resp.json();
         if (data.success && data.data.length > 0) {
             const grouped = {};
@@ -732,34 +500,26 @@ async function searchKnowledgeBase() {
             });
 
             const resultsHtml = Object.values(grouped).map(g => `
-                <div class="search-result-group">
-                    <div class="search-result-filename">📄 ${escapeHtml(g.filename)} (${g.results.length} 条)</div>
+                <div class="kb-search-group">
+                    <div class="kb-search-doc">${getFileIcon(g.filename)} ${escapeHtml(g.filename)}</div>
                     ${g.results.map(r => `
-                        <div class="search-result-item">
-                            <div class="search-result-meta">
-                                <span>分块 ${r.chunk_index + 1}</span>
-                                ${r.page > 0 ? `<span>第 ${r.page} 页</span>` : ''}
-                                <span class="search-score">相似度: ${(r.score * 100).toFixed(1)}%</span>
-                            </div>
-                            <div class="search-result-content">${escapeHtml(r.content.substring(0, 200))}${r.content.length > 200 ? '...' : ''}</div>
+                        <div class="kb-search-item">
+                            <div class="kb-search-score">相关度 ${(r.score || 0).toFixed(3)}</div>
+                            <div class="kb-search-text">${escapeHtml((r.content || '').substring(0, 200))}${(r.content || '').length > 200 ? '...' : ''}</div>
                         </div>
                     `).join('')}
                 </div>
             `).join('');
-
-            els.chunkModalTitle.textContent = `搜索结果: "${query}"`;
-            els.chunkModalBody.innerHTML = resultsHtml + '<div class="modal-actions"><button class="btn btn-outline modal-close-btn">关闭</button></div>';
-            els.chunkModal.classList.remove('modal-hidden');
-            els.chunkModal.style.display = 'flex';
+            els.kbModules.innerHTML = `<div class="kb-section-title">搜索结果（${data.data.length} 条，仅限你有权限的知识库）<button class="doc-action kb-search-back">返回知识库</button></div>` + resultsHtml;
         } else {
-            toast('未找到匹配内容', 'info');
+            els.kbModules.innerHTML = '<p class="empty-hint">未找到相关内容（仅检索你有权限的知识库）</p>';
         }
     } catch (e) {
-        toast(`搜索失败: ${e.message}`, 'error');
+        console.error('搜索失败:', e);
+        toast('搜索失败: ' + (e.message || '网络错误'), 'error');
     } finally {
-        els.kbSearchInput.placeholder = '搜索知识库...';
+        els.kbSearchInput.placeholder = '搜索知识库或文档...';
         els.kbSearchInput.disabled = false;
-        els.kbSearchInput.value = '';
     }
 }
 
@@ -1181,9 +941,15 @@ async function streamAgentResponse(reader, contentEl, thinkingContainer, assista
                     if (event.sources && event.sources.length > 0) {
                         renderSources(assistantMsg, event.sources);
                     }
+                    if (event.conversation_id) {
+                        addFeedbackUI(assistantMsg, event.conversation_id);
+                    }
                 } else if (eventType === 'error') {
                     contentEl.textContent = `Agent 错误: ${event.content}`;
                 } else if (eventType === 'finished') {
+                    if (event.conversation_id) {
+                        addFeedbackUI(assistantMsg, event.conversation_id);
+                    }
                     scrollToBottom();
                 }
             } catch (e) {}
@@ -1352,7 +1118,7 @@ async function sendFeedback(conversationId, value, btn) {
 
 async function viewSourceChunk(docId, chunkIndex) {
     try {
-        const resp = await apiFetch(`${API_BASE}/knowledge/documents/${docId}/chunks`);
+        const resp = await apiFetch(`${API_BASE}/kb/browse/${kbId}/documents/${docId}/chunks`);
         const data = await resp.json();
         if (!data.success || !data.data) {
             toast('无法加载来源内容', 'error');
@@ -1368,7 +1134,7 @@ async function viewSourceChunk(docId, chunkIndex) {
         const chunk = chunks[idx];
         const isLong = chunk.content && chunk.content.length > 300;
         const preview = escapeHtml(chunk.content_preview || chunk.content);
-        const full = escapeHtml(chunk.content);
+        const full = renderMarkdown(chunk.content);
         const chunkId = `source_${docId}_${idx}`;
         els.chunkModalTitle.textContent = `来源查看 - ${escapeHtml(chunk.filename || docId)}`;
         els.chunkModalBody.innerHTML = `
@@ -1406,7 +1172,7 @@ async function checkHealth() {
     try {
         const resp = await apiFetch(`${API_BASE}/chat/health`);
         const data = await resp.json();
-        if (data.deepseek || data.ollama) {
+        if (data.llm || data.deepseek || data.ollama) {
             els.statusIndicator.textContent = '● 就绪';
             els.statusIndicator.className = 'status';
         } else {
@@ -1432,11 +1198,42 @@ function renderMarkdown(text) {
     if (!text) return '';
     try {
         if (typeof marked !== 'undefined' && marked.parse) {
-            return marked.parse(text, { breaks: true, gfm: true });
+            var normalized = normalizeLineBreaks(text);
+            return marked.parse(normalized, { breaks: false, gfm: true });
         }
     } catch (e) {}
     // fallback: 简单转义换行
     return escapeHtml(text).replace(/\n/g, '<br>');
+}
+
+function normalizeLineBreaks(text) {
+    // 按双换行（段落分隔）拆分
+    var blocks = text.split(/\n\s*\n/);
+    return blocks.map(function(block) {
+        var lines = block.split('\n');
+        if (lines.length <= 1) return block;
+        // 保留 Markdown 语法块：标题、列表、引用、代码围栏、表格
+        for (var i = 0; i < lines.length; i++) {
+            var t = lines[i].trim();
+            if (/^(#{1,6}\s|[\*\-\+]\s|\d+\.\s|[>\|]|```|~~~)/.test(t)) {
+                return block;
+            }
+        }
+        // 普通段落：把 PDF 硬换行合并为连续文字
+        return lines.map(function(l) { return l.trim(); }).filter(Boolean).join(' ');
+    }).join('\n\n');
+}
+
+function removeOverlap(prev, current) {
+    var maxOverlap = Math.min(prev.length, current.length, 200);
+    for (var len = maxOverlap; len >= 10; len--) {
+        var suffix = prev.slice(-len);
+        var prefix = current.slice(0, len);
+        if (suffix === prefix) {
+            return current.slice(len);
+        }
+    }
+    return current;
 }
 
 function escapeHtml(text) {

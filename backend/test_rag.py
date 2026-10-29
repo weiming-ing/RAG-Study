@@ -1,171 +1,196 @@
-"""
-RAG 效果评估与测试工具
-注意：此测试脚本中的 rag_service 和 knowledge_base_service 已迁移至 Java 后端。
-如需测试 Java 后端，请使用 D:\RAG-study\test_all.ps1 脚本。
+r"""
+检索质量评测脚本（直连 Java 检索引擎）
+
+旧版说明：rag_service/knowledge_base_service 已迁移至 Java 后端，
+旧脚本因 sources=[] 硬编码永远报 0% 召回，已重写为直调检索接口的标准指标评测。
+
+用途：对 evaluation/test_cases.json 中的测试用例，直调
+POST /api/internal/search（topK=10），计算标准检索指标：
+  - MRR        第一个相关结果的平均倒数排名
+  - NDCG@10    分级相关性折损累计增益
+  - HitRate@3  前 3 条中至少一条相关的比例
+  - 平均/最大端到端检索延迟
+
+相关性判定（无人工标注时的代理标准）：
+  对每个用例的 expected_keywords，命中比例 = 命中词数 / 关键词总数，
+  作为该结果的分级相关度 rel ∈ [0,1]（命中 content 或 parentContent）。
+
+用法：
+  python test_rag.py                 # 全量评测，报告写入 evaluation/retrieval_report.md
+  python test_rag.py --query "问题"  # 单条查询调试（打印检索结果）
+  python test_rag.py --kb-id 1      # 限定知识库
+
+前置条件：rag-engine (8002) 在线且知识库已导入制度文档。
 """
 
+import argparse
+import asyncio
 import json
+import math
 import sys
 import time
-import argparse
+from datetime import datetime
 from pathlib import Path
+
+import httpx
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-# rag_service 和 knowledge_base_service 已迁移至 Java 后端
-# from services.rag_service import rag_service
-# from services.knowledge_base import knowledge_base_service
-from services.query_optimizer import query_optimizer
+from config import JAVA_BACKEND_URL, INTERNAL_API_TOKEN
+
+EVAL_CASES_FILE = Path(__file__).resolve().parent.parent / "evaluation" / "test_cases.json"
+REPORT_FILE = Path(__file__).resolve().parent.parent / "evaluation" / "retrieval_report.md"
+
+TOP_K = 10
+NDCG_K = 10
+HITRATE_K = 3
+# 相关阈值：命中关键词比例 >= 0.5 才算"相关结果"（用于 MRR / HitRate）
+RELEVANT_THRESHOLD = 0.5
 
 
-TEST_CASES = [
-    {
-        "query": "员工请假流程是什么",
-        "expected_keywords": ["请假", "流程", "申请", "审批"],
-        "description": "制度流程类查询",
-    },
-    {
-        "query": "报销需要什么材料",
-        "expected_keywords": ["报销", "发票", "材料", "单据"],
-        "description": "操作指南类查询",
-    },
-    {
-        "query": "公司年假有多少天",
-        "expected_keywords": ["年假", "天数", "假期", "福利"],
-        "description": "事实类查询",
-    },
-    {
-        "query": "入职需要准备哪些东西",
-        "expected_keywords": ["入职", "准备", "材料", "证件"],
-        "description": "清单类查询",
-    },
-    {
-        "query": "IT 部门联系方式",
-        "expected_keywords": ["IT", "联系", "电话", "邮箱"],
-        "description": "精确匹配查询",
-    },
-]
-
-
-def evaluate_retrieval(query: str, top_k: int = 5) -> dict:
-    """评估单条查询的检索效果"""
-    start = time.time()
-
-    # 查询优化
-    optimized = query_optimizer.optimize(query)
-
-    # 混合检索已迁移至 Java 后端
-    # sources = rag_service.retrieve(optimized, top_k=top_k, use_hybrid=True)
-    sources = []
-
-    latency = (time.time() - start) * 1000
-
-    return {
-        "original_query": query,
-        "optimized_query": optimized,
-        "sources": sources,
-        "source_count": len(sources),
-        "latency_ms": round(latency, 1),
-        "top_scores": [],
-        "note": "检索功能已迁移至 Java 后端",
-    }
-
-
-def evaluate_keyword_recall(query: str, expected_keywords: list, sources: list) -> float:
-    """评估关键词召回率"""
-    if not sources:
+def graded_relevance(text: str, keywords: list) -> float:
+    """分级相关度：命中关键词比例"""
+    if not keywords:
         return 0.0
-
-    all_content = " ".join([s["content"] for s in sources])
-    hits = sum(1 for kw in expected_keywords if kw in all_content)
-    return hits / len(expected_keywords)
+    hits = sum(1 for kw in keywords if kw and kw in text)
+    return hits / len(keywords)
 
 
-def run_full_evaluation():
-    """运行完整评估"""
-    print("=" * 60)
-    print("RAG 效果评估报告")
-    print("=" * 60)
+def dcg(rels: list) -> float:
+    return sum(rel / math.log2(i + 2) for i, rel in enumerate(rels))
 
-    # kb_count 已迁移至 Java 后端
-    # kb_count = knowledge_base_service.collection.count()
-    kb_count = 0
-    print(f"\n知识库状态: {kb_count} 个分块 (已迁移至 Java 后端)\n")
 
-    if kb_count == 0:
-        print("⚠️  知识库为空，请先上传文档再测试")
-        print("   启动服务后访问 http://localhost:8001 上传文档")
+def ndcg_at_k(results: list, keywords: list, k: int) -> float:
+    rels = [graded_relevance((r.get("content") or "") + (r.get("parentContent") or ""), keywords)
+            for r in results[:k]]
+    ideal = sorted(rels, reverse=True)
+    if dcg(ideal) == 0:
+        return 0.0
+    return dcg(rels) / dcg(ideal)
+
+
+async def search(client: httpx.AsyncClient, query: str, kb_id: str = None) -> tuple:
+    body = {"query": query, "topK": TOP_K, "enableHybrid": True}
+    if kb_id:
+        body["filters"] = {"kbId": str(kb_id)}
+        body["kbId"] = int(kb_id)
+    t0 = time.time()
+    resp = await client.post(
+        f"{JAVA_BACKEND_URL}/api/internal/search",
+        headers={"X-Internal-Token": INTERNAL_API_TOKEN},
+        json=body,
+    )
+    latency_ms = (time.time() - t0) * 1000
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"search 返回异常: {data}")
+    return (data.get("data") or {}).get("results") or [], latency_ms
+
+
+async def run_full(kb_id: str = None):
+    cases = json.loads(EVAL_CASES_FILE.read_text(encoding="utf-8"))["test_cases"]
+    print(f"评测集: {len(cases)} 条（{EVAL_CASES_FILE.name}），topK={TOP_K}")
+
+    mrr_scores, ndcg_scores, hit_scores, latencies = [], [], [], []
+    rows = []
+    async with httpx.AsyncClient(timeout=60) as client:
+        for case in cases:
+            query = case["query"]
+            keywords = case.get("expected_keywords", [])
+            try:
+                results, latency_ms = await search(client, query, kb_id)
+            except Exception as e:
+                print(f"[SKIP] Java 引擎不可达或查询失败（{query}）: {e}")
+                print("请先启动 rag-engine 并导入知识库文档。")
+                return
+
+            latencies.append(latency_ms)
+            rels = [graded_relevance((r.get("content") or "") + (r.get("parentContent") or ""), keywords)
+                    for r in results]
+
+            # MRR：第一个 rel>=阈值 的倒数排名
+            rr = 0.0
+            for i, rel in enumerate(rels):
+                if rel >= RELEVANT_THRESHOLD:
+                    rr = 1.0 / (i + 1)
+                    break
+            mrr_scores.append(rr)
+
+            ndcg_scores.append(ndcg_at_k(results, keywords, NDCG_K))
+            hit_scores.append(1.0 if any(rel > 0 for rel in rels[:HITRATE_K]) else 0.0)
+
+            rows.append({
+                "id": case.get("id"),
+                "query": query,
+                "category": case.get("category", ""),
+                "results": len(results),
+                "first_relevant": next((i + 1 for i, rel in enumerate(rels) if rel >= RELEVANT_THRESHOLD), "-"),
+                "mrr": round(rr, 3),
+                "ndcg": round(ndcg_scores[-1], 3),
+                "hit": int(hit_scores[-1]),
+                "latency_ms": round(latency_ms),
+            })
+            print(f"  [{case.get('id')}] {query[:20]:<20} MRR={rr:.2f} NDCG={ndcg_scores[-1]:.2f} "
+                  f"Hit={int(hit_scores[-1])} {latency_ms:.0f}ms")
+
+    n = len(rows)
+    if n == 0:
+        print("无有效评测结果")
         return
 
-    total_latency = 0
-    total_recall = 0
-    passed = 0
+    report = []
+    report.append("# 检索质量评测报告\n")
+    report.append(f"- 日期：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    report.append(f"- 评测集：{EVAL_CASES_FILE.name}（{n} 条）")
+    report.append(f"- 检索：POST {JAVA_BACKEND_URL}/api/internal/search，topK={TOP_K}，混合检索"
+                  + (f"，kb_id={kb_id}" if kb_id else "，全库"))
+    report.append(f"- 相关性判定：expected_keywords 命中比例（阈值 {RELEVANT_THRESHOLD}）\n")
+    report.append("## 总体指标\n")
+    report.append("| 指标 | 值 |")
+    report.append("|------|------|")
+    report.append(f"| MRR | {sum(mrr_scores)/n:.3f} |")
+    report.append(f"| NDCG@{NDCG_K} | {sum(ndcg_scores)/n:.3f} |")
+    report.append(f"| HitRate@{HITRATE_K} | {sum(hit_scores)/n:.3f} |")
+    report.append(f"| 平均延迟 | {sum(latencies)/n:.0f} ms |")
+    report.append(f"| 最大延迟 | {max(latencies):.0f} ms |\n")
+    report.append("## 明细\n")
+    report.append("| id | 查询 | 类别 | 结果数 | 首条相关排名 | MRR | NDCG | Hit | 延迟(ms) |")
+    report.append("|----|------|------|--------|--------------|-----|------|-----|----------|")
+    for r in rows:
+        report.append(f"| {r['id']} | {r['query']} | {r['category']} | {r['results']} | "
+                      f"{r['first_relevant']} | {r['mrr']} | {r['ndcg']} | {r['hit']} | {r['latency_ms']} |")
 
-    for i, case in enumerate(TEST_CASES, 1):
-        print(f"[测试 {i}/{len(TEST_CASES)}] {case['description']}")
-        print(f"  查询: {case['query']}")
+    report.append("\n## 解读说明\n")
+    report.append("- 相关性是代理判定：expected_keywords 命中比例 ≥ 0.5 记为相关。部分用例 MRR=0 但 NDCG 很高，"
+                  "是首条结果命中词比例略低于阈值的判定局限，导入人工标注 ground truth 后可消除。")
+    report.append("- 指标低时先确认语料与评测集匹配：评测集面向企业制度问答，若知识库未导入对应制度文档"
+                  "（见 data/documents/ 与 seed_kb.py），低分反映的是语料缺失而非检索缺陷。")
 
-        result = evaluate_retrieval(case["query"])
-        recall = evaluate_keyword_recall(
-            case["query"], case["expected_keywords"], result["sources"]
-        )
-
-        total_latency += result["latency_ms"]
-        total_recall += recall
-
-        status = "✅" if recall >= 0.5 else "⚠️"
-        if recall >= 0.5:
-            passed += 1
-
-        print(f"  优化后: {result['optimized_query']}")
-        print(f"  召回 {result['source_count']} 条, 关键词召回率: {recall:.0%}")
-        print(f"  Top3 分数: {result['top_scores']}")
-        print(f"  延迟: {result['latency_ms']}ms  {status}")
-        if result["sources"]:
-            print(f"  来源: {result['sources'][0]['filename']}")
-        print()
-
-    avg_latency = total_latency / len(TEST_CASES)
-    avg_recall = total_recall / len(TEST_CASES)
-
-    print("=" * 60)
-    print("汇总统计")
-    print("=" * 60)
-    print(f"  测试用例数: {len(TEST_CASES)}")
-    print(f"  通过数: {passed}/{len(TEST_CASES)}")
-    print(f"  平均关键词召回率: {avg_recall:.1%}")
-    print(f"  平均检索延迟: {avg_latency:.1f}ms")
-    print(f"  知识库分块数: {kb_count}")
-    print()
-
-    if avg_recall >= 0.6:
-        print("✅ 整体检索效果良好")
-    elif avg_recall >= 0.4:
-        print("⚠️  检索效果一般，建议: 1) 增加文档覆盖面 2) 调整分块大小 3) 优化 Embedding 模型")
-    else:
-        print("❌ 检索效果较差，建议: 1) 检查文档质量 2) 换用更强的 Embedding 模型 3) 调整分块策略")
+    REPORT_FILE.write_text("\n".join(report), encoding="utf-8")
+    print(f"\n总体: MRR={sum(mrr_scores)/n:.3f}  NDCG@{NDCG_K}={sum(ndcg_scores)/n:.3f}  "
+          f"HitRate@{HITRATE_K}={sum(hit_scores)/n:.3f}  平均延迟={sum(latencies)/n:.0f}ms")
+    print(f"报告已写入: {REPORT_FILE}")
 
 
-def run_single_query(query: str):
-    """单条查询测试"""
-    print(f"原始查询: {query}")
-    result = evaluate_retrieval(query)
-    print(f"优化查询: {result['optimized_query']}")
-    print(f"\n检索结果 ({result['source_count']} 条, {result['latency_ms']}ms):")
-    print("-" * 60)
-    for i, src in enumerate(result["sources"], 1):
-        score = src.get("final_score", src.get("score", 0))
-        print(f"[{i}] {src['filename']} (第{src['page']}页) - 相关度: {score:.4f}")
-        print(f"    {src['content'][:150]}...")
-        print()
+async def run_single(query: str, kb_id: str = None):
+    async with httpx.AsyncClient(timeout=60) as client:
+        results, latency_ms = await search(client, query, kb_id)
+    print(f"查询: {query}  ({latency_ms:.0f}ms, {len(results)} 条)")
+    for i, r in enumerate(results, 1):
+        meta = r.get("metadata") or {}
+        print(f"  [{i}] score={r.get('score', 0):.4f} doc={meta.get('docName', '?')} "
+              f"kb={meta.get('kbId', '?')} chunk={r.get('chunkId', '?')}")
+        print(f"      {(r.get('content') or '')[:80]}...")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="RAG 效果评估工具")
-    parser.add_argument("--query", type=str, help="单条查询测试")
+    parser = argparse.ArgumentParser(description="检索质量评测（MRR/NDCG/HitRate）")
+    parser.add_argument("--query", type=str, help="单条查询调试模式")
+    parser.add_argument("--kb-id", default=None, help="限定知识库 id")
     args = parser.parse_args()
 
     if args.query:
-        run_single_query(args.query)
+        asyncio.run(run_single(args.query, args.kb_id))
     else:
-        run_full_evaluation()
+        asyncio.run(run_full(args.kb_id))

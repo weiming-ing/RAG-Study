@@ -15,6 +15,9 @@ public class KbConfigRequest {
     private String blacklistWords;
     private String whitelistWords;
 
+    /** 可见级别: PUBLIC/EMPLOYEE/MANAGEMENT */
+    private String visibility;
+
     public Integer getChunkSize() { return chunkSize; }
     public void setChunkSize(Integer chunkSize) { this.chunkSize = chunkSize; }
     public Integer getChunkOverlap() { return chunkOverlap; }
@@ -39,4 +42,6 @@ public class KbConfigRequest {
     public void setBlacklistWords(String blacklistWords) { this.blacklistWords = blacklistWords; }
     public String getWhitelistWords() { return whitelistWords; }
     public void setWhitelistWords(String whitelistWords) { this.whitelistWords = whitelistWords; }
+    public String getVisibility() { return visibility; }
+    public void setVisibility(String visibility) { this.visibility = visibility; }
 }

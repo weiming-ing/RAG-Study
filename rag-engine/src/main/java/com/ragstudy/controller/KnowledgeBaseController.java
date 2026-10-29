@@ -7,6 +7,7 @@ import com.ragstudy.model.dto.KbConfigRequest;
 import com.ragstudy.model.dto.KbCreateRequest;
 import com.ragstudy.model.vo.KbAccessUserVO;
 import com.ragstudy.model.vo.KbKnowledgeBaseVO;
+import com.ragstudy.model.vo.AccessibleKbsVO;
 import com.ragstudy.service.KnowledgeBaseManageService;
 import org.springframework.web.bind.annotation.*;
 
@@ -29,6 +30,16 @@ public class KnowledgeBaseController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String category) {
         return ApiResponse.success(kbManageService.listKbs(pageNum, pageSize, keyword, category));
+    }
+
+    /**
+     * 解析用户可访问的知识库集合（三级可见级别的检索强制依据）。
+     * 供 Python 网关在对话/检索前调用（X-Internal-Token 门禁）。
+     * userId 缺省 = 访客语义，仅返回 PUBLIC 级。
+     */
+    @GetMapping("/accessible")
+    public ApiResponse<AccessibleKbsVO> accessible(@RequestParam(required = false) Long userId) {
+        return ApiResponse.success(kbManageService.getAccessibleKbs(userId));
     }
 
     @GetMapping("/{id}")

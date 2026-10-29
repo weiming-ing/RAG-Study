@@ -2,7 +2,8 @@
   <div class="page">
     <el-card>
       <div class="toolbar">
-        <el-select v-model="filterKbId" clearable placeholder="筛选知识库" style="width: 200px">
+        <el-button v-if="scopedKbId !== null" @click="$router.push('/kb')">← 返回知识库</el-button>
+        <el-select v-model="filterKbId" :disabled="scopedKbId !== null" clearable placeholder="筛选知识库" style="width: 200px">
           <el-option v-for="kb in kbList" :key="kb.id" :label="kb.name" :value="kb.id" />
         </el-select>
         <el-input v-model="search" placeholder="搜索文档" style="width: 200px" clearable />
@@ -18,16 +19,17 @@
         </el-table-column>
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="isCompleted(row.status) ? 'success' : isProcessing(row.status) ? 'warning' : 'danger'">
+            <el-tag :type="statusTagType(row.status)">
               {{ statusText(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="chunkCount" label="分块数" width="100" />
         <el-table-column prop="createTime" label="上传时间" width="180" />
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="viewContent(row)">内容</el-button>
+            <el-button size="small" type="primary" @click="viewChunks(row)">分块</el-button>
             <el-button size="small" type="warning" @click="reparse(row)">重新解析</el-button>
             <el-button size="small" type="danger" @click="deleteDoc(row)">删除</el-button>
           </template>
@@ -57,7 +59,7 @@
         <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
         <div class="el-upload__text">拖拽文件到此处或 <em>点击上传</em></div>
         <template #tip>
-          <div class="el-upload__tip">支持 PDF, Word, Excel, TXT, Markdown 等格式</div>
+          <div class="el-upload__tip">支持 PDF, Word, PPT, Excel, TXT, Markdown, HTML 等格式（Docling 解析）</div>
         </template>
       </el-upload>
       <div style="margin-top: 12px">
@@ -74,15 +76,21 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch, computed, onMounted } from 'vue'
+import { ref, reactive, watch, computed, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { getDocs, getDocsAll, uploadDoc, deleteDoc as deleteDocApi, reparseDoc, getDocContent } from '../../api/doc'
 import { getKbs } from '../../api/kb'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+const route = useRoute()
+const router = useRouter()
+// 钻取模式：从知识库列表进入时带 kbId 路由参数，KB 选择锁定
+const scopedKbId = route.params.kbId ? Number(route.params.kbId) : null
+
 const loading = ref(false)
 const tableData = ref([])
 const search = ref('')
-const filterKbId = ref(null)
+const filterKbId = ref(scopedKbId)
 const page = ref(1)
 const total = ref(0)
 const kbList = ref([])
@@ -107,7 +115,15 @@ const formatFileSize = (bytes) => {
 
 const isCompleted = (status) => status === 'READY' || status === 'indexed' || status === 'COMPLETED'
 const isProcessing = (status) => status === 'PARSING' || status === 'processing' || status === 'PROCESSING'
+// 未提取到正文（典型为扫描件 PDF）：文档已入库但内容为空，检索不到，需要 OCR
+const isNeedsOcr = (status) => status === 'NEEDS_OCR' || status === 'needs_ocr'
+const statusTagType = (status) => {
+  if (isCompleted(status)) return 'success'
+  if (isProcessing(status) || isNeedsOcr(status)) return 'warning'
+  return 'danger'
+}
 const statusText = (status) => {
+  if (isNeedsOcr(status)) return '需OCR'
   if (isCompleted(status)) return '已完成'
   if (isProcessing(status)) return '处理中'
   if (status === 'FAILED' || status === 'failed') return '失败'
@@ -152,14 +168,43 @@ const loadData = async () => {
   } finally { loading.value = false }
 }
 
-const showUpload = () => { uploadVisible.value = true }
+const showUpload = () => {
+  if (scopedKbId !== null) uploadKbId.value = scopedKbId
+  uploadVisible.value = true
+}
+const viewChunks = (row) => {
+  const kbId = row.kbId ?? scopedKbId ?? filterKbId.value
+  router.push(`/kb/${kbId}/documents/${row.id}/chunks`)
+}
 const beforeUpload = () => { return !!uploadKbId.value }
-const onUploadSuccess = () => { ElMessage.success('上传成功'); uploadVisible.value = false; loadData() }
+const onUploadSuccess = () => {
+  // 上传接口已改为异步处理：立即返回 PARSING，后台完成切片/向量化/索引
+  ElMessage.success('上传成功，文档解析中，完成后状态自动更新')
+  uploadVisible.value = false
+  loadData()
+  startStatusPolling()
+}
 const onUploadError = (err) => {
   console.error('上传失败:', err)
   const msg = err?.response?.data?.message || err?.message || '服务器异常'
   ElMessage.error('上传失败: ' + msg)
 }
+
+// ===== 解析状态轮询：列表中存在处理中的文档时每 3s 刷新，全部到终态后停止 =====
+let pollTimer = null
+const hasProcessingDocs = () => tableData.value.some((d) => isProcessing(d.status))
+const startStatusPolling = () => {
+  if (pollTimer) return
+  pollTimer = setInterval(async () => {
+    if (!hasProcessingDocs()) { stopStatusPolling(); return }
+    await loadData()
+    if (!hasProcessingDocs()) stopStatusPolling()
+  }, 3000)
+}
+const stopStatusPolling = () => {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+onBeforeUnmount(stopStatusPolling)
 
 const deleteDoc = async (row) => {
   await ElMessageBox.confirm('确定删除该文档?', '提示', { type: 'warning' })
@@ -201,7 +246,10 @@ const viewContent = async (row) => {
 }
 
 watch([search, filterKbId], () => { page.value = 1; loadData() })
-onMounted(async () => { await loadKbList(); loadData() })
+onMounted(async () => {
+  await loadKbList()
+  loadData().then(() => { if (hasProcessingDocs()) startStatusPolling() })
+})
 </script>
 
 <style scoped>

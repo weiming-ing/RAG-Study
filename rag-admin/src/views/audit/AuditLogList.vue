@@ -14,7 +14,16 @@
           <el-option label="成功" value="SUCCESS" />
           <el-option label="失败" value="FAIL" />
         </el-select>
-        <el-input v-model="dateInput" placeholder="日期筛选（暂不可用）" style="width: 160px" disabled />
+        <el-date-picker
+          v-model="filterDateRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          style="width: 240px"
+          clearable
+        />
       </div>
       <el-table :data="tableData" v-loading="loading" style="margin-top: 16px">
         <el-table-column prop="uniqueTag" label="唯一标识" width="200">
@@ -62,7 +71,7 @@ const tableData = ref([])
 const search = ref('')
 const filterType = ref('')
 const filterResult = ref('')
-const dateInput = ref('')
+const filterDateRange = ref(null)
 const page = ref(1)
 const total = ref(0)
 
@@ -72,6 +81,10 @@ const loadData = async () => {
     const params = { pageNum: page.value, pageSize: 10, keyword: search.value || undefined }
     if (filterType.value) params.operation = filterType.value
     if (filterResult.value) params.result = filterResult.value
+    if (filterDateRange.value && filterDateRange.value.length === 2) {
+      params.startDate = filterDateRange.value[0]
+      params.endDate = filterDateRange.value[1]
+    }
     const res = await getAuditLogs(params)
     if (res.data?.records) {
       tableData.value = res.data.records
@@ -87,7 +100,7 @@ const loadData = async () => {
   finally { loading.value = false }
 }
 
-watch([search, filterType, filterResult], () => { page.value = 1; loadData() })
+watch([search, filterType, filterResult, filterDateRange], () => { page.value = 1; loadData() })
 onMounted(loadData)
 </script>
 

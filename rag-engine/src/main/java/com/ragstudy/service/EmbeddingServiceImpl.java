@@ -31,6 +31,10 @@ import java.util.*;
  *   - 池化策略：Mean Pooling（对 attention_mask 有效位置取平均）
  *   - 输出后处理：L2 归一化（使向量模长为 1）
  *
+ * 性能优化：
+ *   - LRU 缓存：同一文本的向量化结果缓存，避免重复 ONNX 推理，命中时省去 50-100ms
+ *   - 预热机制：@PostConstruct 中完成一次真实推理，确保首个用户请求不需要等待模型加载
+ *
  * 降级策略：模型未初始化时使用随机归一化向量，保证系统不崩溃
  */
 @Service
@@ -38,12 +42,26 @@ public class EmbeddingServiceImpl implements EmbeddingService {
 
     private static final Logger log = LoggerFactory.getLogger(EmbeddingServiceImpl.class);
 
+    private static final int CACHE_MAX_SIZE = 2000;
+
     private final RagConfig ragConfig;
     private OrtEnvironment env;
     private OrtSession session;
     private HuggingFaceTokenizer tokenizer;
     private boolean initialized = false;
     private final List<Path> tempFiles = new ArrayList<>();
+
+    /**
+     * LRU 向量缓存：key=文本, value=归一化后的 float[] 向量
+     * LinkedHashMap 第三个参数 accessOrder=true 实现 LRU 淘汰策略
+     */
+    private final Map<String, float[]> embeddingCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(CACHE_MAX_SIZE, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, float[]> eldest) {
+                    return size() > CACHE_MAX_SIZE;
+                }
+            });
 
     /**
      * 构造函数，注入配置
@@ -82,6 +100,9 @@ public class EmbeddingServiceImpl implements EmbeddingService {
             initialized = true;
             log.info("Embedding 服务初始化完成 - 模型: {}, 向量维度: {}",
                     modelPath, embeddingConfig.getDimension());
+
+            doEmbed("预热");
+            log.info("Embedding 预热完成，模型已就绪可接受请求");
         } catch (Exception e) {
             log.error("Embedding 服务初始化失败: {}", e.getMessage(), e);
             initialized = false;
@@ -136,16 +157,20 @@ public class EmbeddingServiceImpl implements EmbeddingService {
     @Override
     public float[] embed(String text) {
         if (!initialized) {
-            // 降级方案：模型加载失败时返回随机归一化向量，保证系统不崩溃
             log.warn("Embedding 服务未初始化，使用随机向量作为降级方案");
             return generateFallbackVector();
         }
 
+        float[] cached = embeddingCache.get(text);
+        if (cached != null) {
+            return cached;
+        }
+
         try {
-            // 实际推理逻辑在私有方法中
-            return doEmbed(text);
+            float[] vector = doEmbed(text);
+            embeddingCache.put(text, vector);
+            return vector;
         } catch (Exception e) {
-            // 截断过长文本，方便日志查看
             log.error("向量化失败: text={}", text.substring(0, Math.min(50, text.length())), e);
             throw new RuntimeException("向量化失败: " + e.getMessage(), e);
         }
@@ -168,14 +193,41 @@ public class EmbeddingServiceImpl implements EmbeddingService {
             return List.of();
         }
 
+        List<float[]> results = new ArrayList<>(texts.size());
+        List<String> uncachedTexts = new ArrayList<>();
+        List<Integer> uncachedIndexes = new ArrayList<>();
+
+        for (int i = 0; i < texts.size(); i++) {
+            String text = texts.get(i);
+            float[] cached = embeddingCache.get(text);
+            if (cached != null) {
+                results.add(cached);
+            } else {
+                results.add(null);
+                uncachedTexts.add(text);
+                uncachedIndexes.add(i);
+            }
+        }
+
+        if (uncachedTexts.isEmpty()) {
+            return results;
+        }
+
         try {
-            return doEmbedBatch(texts);
+            List<float[]> batchVectors = doEmbedBatch(uncachedTexts);
+            for (int j = 0; j < batchVectors.size(); j++) {
+                int originalIndex = uncachedIndexes.get(j);
+                float[] vector = batchVectors.get(j);
+                results.set(originalIndex, vector);
+                embeddingCache.put(uncachedTexts.get(j), vector);
+            }
+            return results;
         } catch (Exception e) {
             log.error("批量向量化失败: count={}, error={}", texts.size(), e.getMessage(), e);
-            // 降级：返回零向量，保证流程继续
             List<float[]> fallback = new ArrayList<>();
             for (String text : texts) {
-                fallback.add(new float[ragConfig.getEmbedding().getDimension()]);
+                float[] cached = embeddingCache.get(text);
+                fallback.add(cached != null ? cached : new float[ragConfig.getEmbedding().getDimension()]);
             }
             return fallback;
         }

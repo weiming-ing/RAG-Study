@@ -9,9 +9,11 @@
 **核心链路**：
 ```
 用户提问 → JWT认证 → 意图识别(闲聊/知识库/操作) → 查询优化(LLM改写+规则) 
-→ 混合检索(向量+BM25) → Cross-Encoder重排序 → 父文档扩展 
-→ [可选: 多轮检索] → LLM流式生成 → Self-RAG事实核查 → 返回答案
+→ 混合检索(向量+BM25) → bi-encoder重排序(0.6×余弦+0.4×原始分) → 父文档扩展(小块检索大块生成)
+→ [可选: 多轮启发式检索] → LLM流式生成 → Self-RAG事实核查 → 返回答案
 ```
+
+**系统架构**：Python FastAPI (AI 网关，:8001) + Spring Boot (管理后端，:8002) + Vue 3 (管理前端，:5173)。Python 层负责 LLM 编排、对话管理、Agent 模式；Java 层负责文档存储解析索引检索、权限管理、统计审计。详见 [.trae/rules/architecture.md](.trae/rules/architecture.md)。
 
 同时还有一条 **Agent 模式**链路（`/api/agent/chat`），通过 DeepSeek 的 Function Calling 能力，让 LLM 自主决策调用哪些工具（搜索知识库、列出文档、查看统计等），最多迭代 5 轮。
 
@@ -41,50 +43,52 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          用户浏览器 (Frontend)                           │
-│                    app.js → fetch /api/chat (SSE)                       │
+│                     管理前端 (Vue 3, :5173) 或 API 客户端                 │
+│                     POST /api/chat (SSE streaming)                       │
 └────────────────────────────────┬────────────────────────────────────────┘
                                  │ Bearer Token
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    FastAPI Server (localhost:8001)                       │
+│                   Python FastAPI (AI 网关, :8001)                        │
 │                                                                         │
 │  1. JWTAuthMiddleware → 验证 JWT → 查 MySQL 确认用户存在                  │
 │  2. routes/chat.py → chat()                                             │
-│     ├─ session_service.add_message()    → Redis (LPUSH messages)        │
-│     ├─ session_service.update_title()   → Redis (HSET title)            │
-│     ├─ session_service.get_history()    → Redis (LRANGE messages)       │
-│     │                                                                   │
-│     ├─ 【并发】intent_service.classify()  → DeepSeek API (LLM 意图分类)   │
-│     └─ 【并发】query_optimizer.optimize_async() → DeepSeek API (LLM 改写) │
+│     ├─ session_service: 获取/创建会话 + 历史消息（Redis/SQLite）           │
+│     ├─ intent_service.classify()  → DeepSeek API (LLM 意图分类)          │
+│     └─ query_optimizer.optimize_async() → DeepSeek API (LLM 改写)        │
 │                                                                         │
 │  3. 根据意图路由:                                                         │
 │     ├─ intent=chat      → 直接 LLM 生成（不检索）                         │
 │     ├─ intent=action    → 本地执行操作（查统计/列文档）                     │
 │     └─ intent=knowledge → RAG 检索管线 ─────────────────────┐            │
 │                                                              │            │
-│  4. RAG 检索管线:                                              │            │
-│     ├─ rag_service.retrieve()                                 │            │
-│     │   ├─ _hybrid_search()                                   │            │
-│     │   │   ├─ 向量检索    → ChromaDB (cosine similarity)     │            │
-│     │   │   └─ BM25 检索   → 本地 BM25Okapi 索引              │            │
-│     │   │   加权融合: vector*0.7 + bm25*0.3                   │            │
-│     │   ├─ _deduplicate() (去重)                              │            │
-│     │   ├─ expand_to_parents() → ChromaDB parent_collection   │            │
-│     │   └─ reranker.rerank()  → CrossEncoder 本地模型重排序    │            │
-│     │                                                         │            │
-│     └─ multi_hop_retrieve() [条件触发]                         │            │
-│         ├─ LLM 生成补充查询 → DeepSeek API                     │            │
-│         └─ 二次检索 + 去重 + 重排序                             │            │
-│                                                              │            │
-│  5. LLM 流式生成                                              │            │
-│     └─ llm_service.generate() → DeepSeek API (SSE streaming)  │            │
-│                                                              │            │
-│  6. Self-RAG 反思（后台，不阻塞）                                │            │
-│     └─ self_rag_service.verify() → DeepSeek API (事实核查)     │            │
-│                                                              │            │
-│  7. 保存回复                                                   │            │
-│     └─ session_service.add_message() → Redis (RPUSH)          │            │
+│  4. RAG 检索（调 Java 后端）:                                   │            │
+│     └─ rag_service._java_search() → HTTP 代理 →  ┐           │            │
+│                                                   ▼           │            │
+│  ┌─────────── Spring Boot 管理后端 (:8002) ───────────────────┘            │
+│  │                                                                        │
+│  │  HybridSearchService (并发执行):                                        │
+│  │   ├─ VectorStoreService → Qdrant (child 集合, 512维)                    │
+│  │   └─ Bm25ServiceImpl    → Apache Lucene BM25 索引                       │
+│  │  加权融合: vector*0.7 + bm25*0.3 → 去重                                 │
+│  │                                                                        │
+│  │  RerankerService: bi-encoder 二次打分                                   │
+│  │   综合分 = 0.6 × 余弦相似度 + 0.4 × 原始检索分                            │
+│  │                                                                        │
+│  │  [可选] MultiHopService: 启发式关键词扩展, 2 轮检索                       │
+│  │                                                                        │
+│  │  返回 SearchResultVO 列表（含 chunkId/docId/kbId/parentContent）         │
+│  └────────────────────────────────────────────────────────────────────────┘
+│                                                              │
+│  5. LLM 流式生成                                              │
+│     └─ llm_service.generate() → DeepSeek API (SSE streaming)  │
+│     └─ 上下文使用 parentContent (父块 ~1000字，更完整)          │
+│                                                              │
+│  6. Self-RAG 反思（后台，不阻塞）                                │
+│     └─ self_rag_service.verify() → DeepSeek API (事实核查)     │
+│                                                              │
+│  7. 异步统计记录（fire-and-forget）                              │
+│     └─ 对话日志 + 文档引用热度 + Token 用量 → Java 后端 MySQL    │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -92,14 +96,15 @@
 
 | 组件 | 用途 | 调用方式 |
 |------|------|----------|
-| **DeepSeek API** | LLM 生成、意图分类、查询改写、多轮检索补充查询、Self-RAG 验证、文档摘要生成 | HTTP (httpx) |
-| **ChromaDB** | 向量存储与检索（3个collection: 子块/父块/摘要） | 本地持久化 (chroma.sqlite3) |
-| **BM25 索引** | 关键词稀疏检索 | 本地 pickle 文件 (bm25_index.pkl) |
-| **Cross-Encoder** | 检索结果重排序 (BAAI/bge-reranker-base) | 本地 CPU 推理 |
-| **Sentence Transformer** | 文本向量化 (BAAI/bge-small-zh-v1.5) | 本地 CPU 推理 |
-| **Redis** | 会话元数据 + 消息历史存储 | TCP (localhost:6379) |
-| **MySQL** | 用户账号存储 (users表) | TCP (localhost:3306) |
-| **SQLite** | 旧版会话存储（已迁移到Redis，但初始化代码仍在） | 本地文件 (rag_assistant.db) |
+| **DeepSeek API** | LLM 生成、意图分类、查询改写、Self-RAG 验证 | HTTP (httpx) |
+| **Qdrant** | 向量存储与检索（child 集合 rag_knowledge + parent 集合 rag_knowledge_parent） | gRPC (localhost:6333) |
+| **Apache Lucene** | BM25 全文索引（存储 kbId/documentId 支持权限过滤） | 本地文件 (data/bm25_index/) |
+| **ONNX Runtime** | 文本向量化 (bge-small-zh, 512维) | 本地 CPU 推理 |
+| **Reranker** | bi-encoder 二次打分（0.6×余弦 + 0.4×原始分），复用同一 Embedding 模型 | 本地 CPU 推理 |
+| **Spring Boot** | 文档管理、索引、检索、权限、统计、审计 | HTTP (localhost:8002) |
+| **Redis** | 会话元数据 + 消息历史缓存 | TCP (localhost:6379) |
+| **MySQL** | 用户/知识库/文档/切片/对话日志/审计/权限 (rag_engine 库) | TCP (localhost:3306) |
+| **SQLite** | 会话 + 消息 (Redis 不可用时降级) | 本地文件 (data/rag_assistant.db) |
 
 ---
 
@@ -109,15 +114,17 @@
 |----------|------|-------------|------|
 | **Web框架** | FastAPI (Python) | Flask / Django | 学习成本低，异步支持原生，但生态不如 Django 成熟，无 ORM 需手写 SQL |
 | **LLM** | DeepSeek API (deepseek-v4-flash) | OpenAI / 本地 Ollama | 依赖外部 API，有网络延迟和费用；但无需 GPU 部署，模型能力强 |
-| **Embedding** | BAAI/bge-small-zh-v1.5 (本地CPU) | text2vec / m3e / OpenAI Embedding | 中文效果好，但 CPU 推理较慢，首次加载需下载模型（~100MB） |
-| **向量数据库** | ChromaDB (本地持久化) | Milvus / Qdrant / FAISS | 轻量零配置，但单机性能有限，不支持分布式 |
-| **Reranker** | BAAI/bge-reranker-base (Cross-Encoder) | Cohere Rerank API / 无重排序 | 显著提升检索精度，但增加额外推理延迟 |
-| **混合检索** | 向量(0.7) + BM25(0.3) | 纯向量 / 纯BM25 | 互补效果好，但需要维护 BM25 索引一致性 |
-| **会话存储** | Redis | SQLite / 内存 | 高性能、支持过期，但需要额外部署 Redis 服务 |
-| **用户认证** | JWT + bcrypt + MySQL | OAuth2 / Session Cookie | 无状态认证，但需要管理 token 刷新逻辑 |
-| **前端** | 原生 HTML/CSS/JS | React / Vue | 零构建步骤，但代码组织和可维护性差 |
-| **父文档检索** | 小块检索(300字) + 大块生成(1000字) | 固定大小分块 | 检索精度高、上下文完整，但存储量翻倍 |
+| **Embedding** | bge-small-zh (ONNX 本地 CPU 推理, 512维) | text2vec / m3e / OpenAI Embedding | 中文效果好，但 CPU 推理较慢，首次加载需下载模型（~100MB） |
+| **向量数据库** | Qdrant (本地部署, :6334) | ChromaDB / Milvus / FAISS | 高性能 gRPC API，支持过滤条件，但需额外部署进程 |
+| **全文索引** | Apache Lucene 9.12 (BM25) | Elasticsearch / 纯内存 | 本地文件索引，支持 kbId/documentId 权限过滤，无需外部服务 |
+| **Reranker** | bi-encoder 二次打分（0.6×余弦 + 0.4×原始分） | CrossEncoder / Cohere Rerank API | 复用 Embedding 模型，无额外推理开销；排序提升有限但够用 |
+| **混合检索** | 向量(0.7) + BM25(0.3) 加权融合 | 纯向量 / 纯BM25 | 互补效果好，去重后按综合分排序 |
+| **管理后端** | Spring Boot 3.4.4 + MyBatis-Plus | Django Admin / 纯 FastAPI | Java 生态成熟，ORM 方便，适合复杂业务逻辑和 RBAC |
+| **管理前端** | Vue 3 + Element Plus + ECharts + Pinia | React / 原生 JS | 组件库丰富，适合后台管理系统快速开发 |
+| **检索架构** | Python 网关 → Java 引擎 (HTTP 代理) | 纯 Python / 纯 Java | 职责分离：Python 管 LLM 编排，Java 管检索引擎和业务数据 |
+| **父文档检索** | 小块检索(~300字) + 大块生成(~1000字) | 固定大小分块 | 子块 payload 存 parentContent，检索后直接用父块做 LLM 上下文 |
 | **Agent模式** | DeepSeek Function Calling | LangChain Agent / 自研 | 实现简单，但受限于模型能力，复杂推理可能偏差 |
+| **多跳检索** | 启发式关键词扩展 + 固定 2 轮检索 | LLM 生成补充查询 | 规则驱动、无额外 LLM 调用，速度快但扩展范围有限 |
 
 **关键设计决策**：
 - **父子文档分块**：用小块（~300字）做精确向量检索，命中的小块映射到父块（~1000字），用父块内容作为 LLM 上下文，兼顾检索精度和上下文完整性
@@ -139,9 +146,9 @@
 
 2. **BM25 索引与向量库不一致**
    - 现象：上传文档后 BM25 检索不到新内容
-   - 定位：检查 `bm25_index.pkl` 文件时间戳
-   - 修复：`_notify_bm25()` 在上传后清空 BM25 缓存，下次检索时自动重建
-   - 验证：上传文档后观察 `[BM25] 索引构建完成` 日志
+   - 定位：检查 `data/bm25_index/` 目录下 Lucene 索引文件时间戳
+   - 修复：`bm25Service.indexDocuments()` 在文档上传后同步写入 Lucene 索引；若索引损坏可设置 `rag.bm25.auto-rebuild=true` 启动时自动重建
+   - 验证：上传文档后观察 `[BM25]` 相关日志
 
 3. **多轮检索触发过于频繁**
    - 现象：每次查询都触发多轮检索，LLM 调用增加
@@ -169,7 +176,7 @@
 
 | 指标 | 数据来源 | 统计口径 | 对照条件 |
 |------|---------|---------|---------|
-| **检索延迟** | `test_rag.py` 中 `evaluate_retrieval()` 打点 | 单次混合检索端到端耗时（含向量+BM25+重排序） | 不同 top_k 值、开关混合检索 |
+| **检索延迟** | `test_rag.py` 中 `evaluate_retrieval()` 打点 | 单次混合检索端到端耗时（含 Qdrant 向量查询 + Lucene BM25 + bi-encoder 二次打分） | 不同 top_k 值、开关混合检索 |
 | **关键词召回率** | `test_rag.py` 中 `evaluate_keyword_recall()` | 检索结果中包含预期关键词的比例 | 不同查询改写策略 |
 | **知识库规模** | `GET /api/knowledge/statistics` | 文档数、分块数、总大小 | 上传前后对比 |
 | **LLM 生成质量** | Self-RAG 验证的 `confidence` 分数 | 0-1 的可信度评分 | 不同检索策略、不同 chunk_size |
@@ -202,6 +209,4 @@
 
 ## 总结
 
-这是一个**全栈独立开发**的企业级 RAG 项目，技术栈选型务实（轻量 ChromaDB + 免费 DeepSeek API + 本地 CPU 推理）
-，RAG 管线设计完整（意图路由 → 查询改写 → 混合检索 → 重排序 → 父文档扩展 → 多轮检索 → Self-RAG 验证）
-，同时提供了 Agent 模式作为进阶功能。当前处于**开发/演示阶段**，缺少生产环境监控和标准化的检索质量评估体系。
+这是一个**全栈独立开发**的企业级 RAG 项目。架构上采用 **Python FastAPI (AI 网关) + Java Spring Boot (检索引擎/管理后端) + Vue 3 (管理前端)** 三层分离，RAG 管线设计完整（意图路由 → 查询改写 → 混合检索(Qdrant+Lucene BM25) → bi-encoder 二次打分 → 父文档扩展 → 启发式多跳检索 → Self-RAG 验证）。当前处于**持续完善阶段**，已知缺陷和修复记录见 [接线审计清单](docs/capability-audit.md)。

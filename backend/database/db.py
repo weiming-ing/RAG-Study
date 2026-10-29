@@ -22,6 +22,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 title TEXT DEFAULT '新对话',
+                user_id TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -55,6 +56,11 @@ async def init_db():
         except Exception:
             pass
         await db.commit()
+        # Migrate: add user_id column for existing databases
+        try:
+            await db.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT DEFAULT ''")
+        except Exception:
+            pass
     finally:
         await db.close()
 

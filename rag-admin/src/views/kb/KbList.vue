@@ -8,12 +8,20 @@
       <el-table :data="tableData" v-loading="loading" style="margin-top: 16px">
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="name" label="知识库名称" />
+        <el-table-column label="访问级别" width="110">
+          <template #default="{ row }">
+            <el-tag :type="visibilityTagType(row.visibilityLevel)">
+              {{ visibilityText(row.visibilityLevel) }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="description" label="描述" show-overflow-tooltip />
         <el-table-column prop="embeddingModel" label="嵌入模型" width="150" />
         <el-table-column prop="docCount" label="文档数" width="100" />
         <el-table-column prop="createTime" label="创建时间" width="180" />
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="340" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" type="primary" @click="$router.push(`/kb/${row.id}/documents`)">文档</el-button>
             <el-button size="small" @click="editKb(row)">编辑</el-button>
             <el-button size="small" type="success" @click="$router.push(`/kb/${row.id}/config`)">配置</el-button>
             <el-button size="small" type="danger" @click="deleteKb(row.id)">删除</el-button>
@@ -33,6 +41,14 @@
       <el-form :model="form" :rules="rules" ref="formRef" label-width="100px">
         <el-form-item label="名称" prop="name">
           <el-input v-model="form.name" />
+        </el-form-item>
+        <el-form-item label="访问级别" prop="visibility">
+          <el-select v-model="form.visibility" style="width: 100%">
+            <el-option label="公共级（所有人，含访客）" value="PUBLIC" />
+            <el-option label="员工级（所有登录用户）" value="EMPLOYEE" />
+            <el-option label="管理级（仅授权用户）" value="MANAGEMENT" />
+          </el-select>
+          <div class="form-tip">管理级知识库需在"配置 → 访问权限"中给具体用户授权后方可检索</div>
         </el-form-item>
         <el-form-item label="描述" prop="description">
           <el-input v-model="form.description" type="textarea" :rows="3" />
@@ -81,6 +97,7 @@ const formRef = ref(null)
 
 const form = reactive({
   name: '', description: '', embeddingModel: 'text-embedding-ada-002',
+  visibility: 'EMPLOYEE',
   chunkSize: 500, chunkOverlap: 50, topK: 5, similarityThreshold: 0.7
 })
 
@@ -88,8 +105,13 @@ const rules = {
   name: [{ required: true, message: '请输入知识库名称', trigger: 'blur' }]
 }
 
+// 三级可见级别展示（与 Java KnowledgeBaseManageService.VIS_* 对应）
+const visibilityText = (v) => ({ PUBLIC: '公共级', EMPLOYEE: '员工级', MANAGEMENT: '管理级' }[v] || v || '员工级')
+const visibilityTagType = (v) => ({ PUBLIC: 'success', EMPLOYEE: '', MANAGEMENT: 'danger' }[v] || 'info')
+
 const resetForm = () => {
   form.name = ''; form.description = ''; form.embeddingModel = 'text-embedding-ada-002'
+  form.visibility = 'EMPLOYEE'
   form.chunkSize = 500; form.chunkOverlap = 50; form.topK = 5; form.similarityThreshold = 0.7
 }
 
@@ -112,6 +134,7 @@ const editKb = (row) => {
   editingKb.value = row
   Object.assign(form, {
     name: row.name, description: row.description || '', embeddingModel: row.embeddingModel || 'text-embedding-ada-002',
+    visibility: row.visibilityLevel || 'EMPLOYEE',
     chunkSize: row.chunkSize || 500, chunkOverlap: row.chunkOverlap || 50, topK: row.topK || 5, similarityThreshold: row.similarityThreshold || 0.7
   })
   dialogVisible.value = true
@@ -148,4 +171,5 @@ onMounted(loadData)
 <style scoped>
 .page { width: 100%; }
 .toolbar { display: flex; gap: 12px; align-items: center; }
+.form-tip { font-size: 12px; color: #909399; line-height: 1.5; margin-top: 4px; }
 </style>

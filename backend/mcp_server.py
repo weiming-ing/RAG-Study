@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 from contextlib import asynccontextmanager
 
 import httpx
+import urllib.request
+import urllib.error
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -23,7 +25,10 @@ from config import (
     TOP_K,
     SIMILARITY_THRESHOLD,
     USE_HYBRID_SEARCH,
+    CORS_ALLOW_ORIGINS,
+    INTERNAL_API_TOKEN,
 )
+from utils.internal_api import internal_headers
 
 # MCP 协议版本
 MCP_VERSION = "1.0.0"
@@ -32,13 +37,70 @@ SERVICE_VERSION = "1.0.0"
 
 
 class RAGMCPTools:
-    """RAG MCP 工具集合，定义可被外部调用的工具"""
+    """RAG MCP 工具集合，定义可被外部调用的工具。
+
+    使用同步 urllib 而非 httpx.AsyncClient，避免 Windows 上 uvicorn 事件循环
+    内部再发起 HTTP 调用时的阻塞问题。
+    """
 
     def __init__(self):
         self.java_backend_url = JAVA_BACKEND_URL
+        self.python_backend_url = "http://localhost:8001"
         self.timeout = 15.0
+        self._admin_token = None
 
-    async def search_knowledge(
+    def _ensure_admin_token(self) -> str:
+        """获取管理员 JWT Token，用于调用需要认证的管理接口"""
+        if self._admin_token:
+            return self._admin_token
+        try:
+            data = json.dumps({"username": "admin", "password": "admin123"}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{self.python_backend_url}/api/auth/login",
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                result = json.loads(resp.read())
+                token = result.get("data", {}).get("accessToken") or result.get("data", {}).get("token", "")
+                if token:
+                    self._admin_token = token
+                    return token
+        except Exception:
+            pass
+        return ""
+
+    def _post(self, path: str, body: dict, extra_headers: dict = None, base_url: str = None) -> dict:
+        if base_url is None:
+            base_url = self.java_backend_url
+        headers = {"Content-Type": "application/json"}
+        if extra_headers:
+            headers.update(extra_headers)
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base_url}{path}",
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return json.loads(resp.read())
+
+    def _get(self, path: str, extra_headers: dict = None, base_url: str = None) -> dict:
+        if base_url is None:
+            base_url = self.java_backend_url
+        headers = {}
+        if extra_headers:
+            headers.update(extra_headers)
+        req = urllib.request.Request(
+            f"{base_url}{path}",
+            headers=headers,
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return json.loads(resp.read())
+
+    def search_knowledge(
         self,
         query: str,
         top_k: int = 5,
@@ -46,127 +108,68 @@ class RAGMCPTools:
     ) -> Dict[str, Any]:
         """
         在企业知识库中进行语义搜索，返回与查询最相关的文档片段。
-
-        Args:
-            query: 搜索查询文本
-            top_k: 返回最大结果数，默认 5
-            threshold: 相似度阈值，低于此阈值的结果会被过滤，默认使用配置值
-
-        Returns:
-            搜索结果列表，包含内容、文档名、相关度分数
         """
         if threshold is None:
             threshold = SIMILARITY_THRESHOLD
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(
-                    f"{self.java_backend_url}/api/internal/search",
-                    json={
-                        "query": query,
-                        "topK": top_k,
-                        "enableHybrid": USE_HYBRID_SEARCH,
-                        "filters": {},
-                    },
-                )
-                if resp.status_code != 200:
-                    return {
-                        "success": False,
-                        "error": f"Java 后端调用失败: HTTP {resp.status_code}",
-                        "results": [],
-                    }
-
-                data = resp.json()
-                if not data.get("success"):
-                    return {
-                        "success": False,
-                        "error": data.get("error", "未知错误"),
-                        "results": [],
-                    }
-
-                search_data = data.get("data", {})
-                raw_results = search_data.get("results", [])
-
-                # 过滤并格式化结果
-                results = []
-                for r in raw_results:
-                    score = r.get("score", 0)
-                    if score < threshold:
-                        continue
-                    metadata = r.get("metadata", {})
-                    results.append({
-                        "content": r.get("content", ""),
-                        "document_name": metadata.get("docName", metadata.get("filename", "未知文档")),
-                        "document_id": metadata.get("documentId", ""),
-                        "chunk_index": metadata.get("chunkIndex", 0),
-                        "score": round(score, 4),
-                    })
-
-                return {
-                    "success": True,
+            data = self._post(
+                "/api/internal/search",
+                {
                     "query": query,
-                    "total_found": len(results),
-                    "results": results,
-                }
+                    "topK": top_k,
+                    "enableHybrid": USE_HYBRID_SEARCH,
+                    "filters": {},
+                },
+                extra_headers=internal_headers(),
+            )
+            if data is None or (isinstance(data, dict) and data.get("code") and data["code"] != 0):
+                return {"success": False, "error": data.get("message", "未知错误"), "results": []}
 
-        except Exception as e:
-            error_msg = str(e)
-            if "All connection attempts failed" in error_msg or "无法连接" in error_msg or "Connection refused" in error_msg:
-                error_msg = (
-                    f"无法连接到 Java 后端 ({self.java_backend_url})，请确保 Java 后端已启动。"
-                    "搜索功能需要 Java 后端提供检索服务。"
-                    f"原始错误: {e}"
-                )
+            search_data = data.get("data", data) if isinstance(data, dict) else {}
+            if isinstance(search_data, list):
+                raw_results = search_data
+            else:
+                raw_results = search_data.get("results", [])
+            results = []
+            for r in raw_results:
+                score = r.get("score", 0)
+                if score < threshold:
+                    continue
+                metadata = r.get("metadata", {})
+                results.append({
+                    "content": r.get("content", ""),
+                    "document_name": metadata.get("docName", metadata.get("filename", "未知文档")),
+                    "document_id": metadata.get("documentId", ""),
+                    "chunk_index": metadata.get("chunkIndex", 0),
+                    "score": round(score, 4),
+                })
             return {
-                "success": False,
-                "error": error_msg,
-                "results": [],
+                "success": True,
+                "query": query,
+                "total_found": len(results),
+                "results": results,
             }
+        except Exception as e:
+            return {"success": False, "error": str(e), "results": []}
 
-    async def list_knowledge_bases(self) -> Dict[str, Any]:
+    def list_knowledge_bases(self) -> Dict[str, Any]:
         """
         获取所有可用的知识库列表。
-
-        Returns:
-            知识库列表，包含 ID、名称、描述等信息
         """
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(f"{self.java_backend_url}/api/knowledge-bases/list")
-                if resp.status_code != 200:
-                    return {
-                        "success": False,
-                        "error": f"获取知识库列表失败: HTTP {resp.status_code}",
-                        "knowledge_bases": [],
-                    }
-
-                data = resp.json()
-                if not data.get("success"):
-                    return {
-                        "success": False,
-                        "error": data.get("error", "未知错误"),
-                        "knowledge_bases": [],
-                    }
-
-                return {
-                    "success": True,
-                    "knowledge_bases": data.get("data", []),
-                }
-
+            data = self._get("/api/internal/knowledge-bases", extra_headers=internal_headers())
+            if data is None:
+                return {"success": False, "error": "无法获取知识库列表", "knowledge_bases": []}
+            result_data = data.get("data", {})
+            kbs = result_data.get("records", result_data) if isinstance(result_data, dict) else result_data
+            if isinstance(kbs, list):
+                return {"success": True, "knowledge_bases": kbs}
+            return {"success": True, "knowledge_bases": []}
         except Exception as e:
-            error_msg = str(e)
-            if "All connection attempts failed" in error_msg or "无法连接" in error_msg or "Connection refused" in error_msg:
-                error_msg = (
-                    f"无法连接到 Java 后端 ({self.java_backend_url})，请确保 Java 后端已启动。"
-                    f"原始错误: {e}"
-                )
-            return {
-                "success": False,
-                "error": error_msg,
-                "knowledge_bases": [],
-            }
+            return {"success": False, "error": str(e), "knowledge_bases": []}
 
-    async def get_document_chunks(
+    def get_document_chunks(
         self,
         document_id: str,
         page: int = 1,
@@ -174,76 +177,39 @@ class RAGMCPTools:
     ) -> Dict[str, Any]:
         """
         获取指定文档的所有切片。
-
-        Args:
-            document_id: 文档 ID
-            page: 页码，从 1 开始
-            page_size: 每页数量
-
-        Returns:
-            文档切片列表
         """
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(
-                    f"{self.java_backend_url}/api/chunks/list",
-                    params={
-                        "documentId": document_id,
-                        "pageNum": page,
-                        "pageSize": page_size,
-                    },
-                )
-                if resp.status_code != 200:
-                    return {
-                        "success": False,
-                        "error": f"获取文档切片失败: HTTP {resp.status_code}",
-                        "chunks": [],
-                    }
-
-                data = resp.json()
-                if not data.get("success"):
-                    return {
-                        "success": False,
-                        "error": data.get("error", "未知错误"),
-                        "chunks": [],
-                    }
-
-                return {
-                    "success": True,
-                    "document_id": document_id,
-                    "total": data.get("total", 0),
-                    "page": page,
-                    "chunks": data.get("data", []),
-                }
-
-        except Exception as e:
-            error_msg = str(e)
-            if "All connection attempts failed" in error_msg or "无法连接" in error_msg or "Connection refused" in error_msg:
-                error_msg = (
-                    f"无法连接到 Java 后端 ({self.java_backend_url})，请确保 Java 后端已启动。"
-                    f"原始错误: {e}"
-                )
+            path = f"/api/internal/knowledge/chunks/{document_id}"
+            data = self._get(path, extra_headers=internal_headers())
+            if data is None:
+                return {"success": False, "error": "无法获取文档切片", "chunks": []}
+            all_chunks = data.get("data", [])
+            if not isinstance(all_chunks, list):
+                all_chunks = []
+            total = len(all_chunks)
+            start = (page - 1) * page_size
+            end = start + page_size
+            chunks = all_chunks[start:end]
             return {
-                "success": False,
-                "error": error_msg,
-                "chunks": [],
+                "success": True,
+                "document_id": document_id,
+                "total": total,
+                "page": page,
+                "chunks": chunks,
             }
+        except Exception as e:
+            return {"success": False, "error": str(e), "chunks": []}
 
-    async def health_check(self) -> Dict[str, Any]:
+    def health_check(self) -> Dict[str, Any]:
         """
         健康检查，检查服务和 Java 后端是否正常运行。
-
-        Returns:
-            健康状态信息
         """
         java_healthy = False
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(f"{self.java_backend_url}/api/internal/health")
-                java_healthy = resp.status_code == 200
+            self._get("/api/internal/health", extra_headers=internal_headers())
+            java_healthy = True
         except Exception:
             pass
-
         return {
             "success": True,
             "service": SERVICE_NAME,
@@ -338,9 +304,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# 不再使用通配来源：allow_origins=["*"] 与 allow_credentials=True 组合
+# 既不合法也不安全。允许的来源由 CORS_ALLOW_ORIGINS 环境变量配置。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -746,7 +714,7 @@ async def call_tool(data: Dict[str, Any]):
         return {"success": False, "error": f"工具 '{tool_name}' 不存在。可用工具: {available}"}
 
     try:
-        result = await tool_map[tool_name](**parameters)
+        result = await asyncio.to_thread(tool_map[tool_name], **parameters)
         return result
     except TypeError as e:
         return {"success": False, "error": f"参数错误: {e}"}
@@ -771,5 +739,5 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    # MCP Server 默认运行在 8003 端口，避免与原有服务冲突
-    uvicorn.run("mcp_server:app", host="0.0.0.0", port=8003, reload=True)
+    # MCP Server 默认运行在 8004 端口，避免与原有服务冲突
+    uvicorn.run("mcp_server:app", host="0.0.0.0", port=8005, reload=False)

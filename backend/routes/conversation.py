@@ -1,10 +1,10 @@
 import os
 import httpx
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from typing import Optional
 
-from routes.auth import get_current_user
+from routes.auth import get_current_user, require_admin, ADMIN_ROLES
 
 JAVA_BACKEND = os.getenv("JAVA_BACKEND_URL", "http://localhost:8002")
 
@@ -21,7 +21,29 @@ async def _proxy_java_get(path: str, request: Request, params: dict = None):
                 headers["Authorization"] = auth
 
             resp = await client.get(f"{JAVA_BACKEND}{path}", params=params, headers=headers)
+
+            if resp.status_code == 403:
+                return JSONResponse(status_code=403, content={
+                    "success": False, "data": None,
+                    "error": "无权限访问，请检查认证凭据是否有效"
+                })
+            if resp.status_code == 401:
+                return JSONResponse(status_code=401, content={
+                    "success": False, "data": None,
+                    "error": "未认证，请重新登录"
+                })
+            if resp.status_code >= 400:
+                return JSONResponse(content={
+                    "success": False, "data": None,
+                    "error": f"后端返回错误 (HTTP {resp.status_code})"
+                })
+
             java_resp = resp.json()
+            if not isinstance(java_resp, dict):
+                return JSONResponse(content={
+                    "success": False, "data": None,
+                    "error": "后端返回格式异常"
+                })
 
             if java_resp.get("code") == 0:
                 return JSONResponse(content={
@@ -43,7 +65,7 @@ async def _proxy_java_get(path: str, request: Request, params: dict = None):
 @router.get("/grouped")
 async def list_conversations_grouped(
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get("/api/conversations/grouped", request)
 
@@ -52,7 +74,7 @@ async def list_conversations_grouped(
 async def get_conversation_detail(
     conversation_id: int,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get(f"/api/conversations/{conversation_id}", request)
 
@@ -61,7 +83,7 @@ async def get_conversation_detail(
 async def get_conversation_chunk_trace(
     conversation_id: int,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """追溯对话→切片→文档：返回 chunk_id 列表及其对应的切片内容和文档信息"""
     return await _proxy_java_get(f"/api/conversations/{conversation_id}/chunk-trace", request)
@@ -71,7 +93,7 @@ async def get_conversation_chunk_trace(
 async def save_or_update_conversation(
     request: Request,
     body: dict,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
@@ -106,7 +128,7 @@ async def list_conversations(
     startDate: Optional[str] = Query(None),
     endDate: Optional[str] = Query(None),
     userId: Optional[int] = Query(None),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     params = {"pageNum": pageNum, "pageSize": pageSize}
     if keyword:
@@ -122,6 +144,31 @@ async def list_conversations(
     return await _proxy_java_get("/api/conversations", request, params)
 
 
+async def _ensure_log_owner(conversation_id: int, request: Request, current_user: dict):
+    """反馈写入前的归属校验：能查到记录且归属不匹配（且非管理员）时返回 404。
+
+    归属未知（Java 不可达/历史数据无 userId）时放行，保持向后兼容。
+    """
+    roles = current_user.get("roles") or []
+    if any(r in ADMIN_ROLES for r in roles):
+        return
+    auth = request.headers.get("Authorization", "")
+    if not auth:
+        return
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.get(
+                f"{JAVA_BACKEND}/api/conversations/{conversation_id}",
+                headers={"Authorization": auth},
+            )
+            data = (resp.json() or {}).get("data") or {}
+        except Exception:
+            return
+    owner_id = data.get("userId")
+    if owner_id is not None and int(owner_id) != int(current_user["id"]):
+        raise HTTPException(status_code=404, detail="对话记录不存在")
+
+
 @router.put("/{conversation_id}/feedback")
 async def update_feedback(
     conversation_id: int,
@@ -129,6 +176,7 @@ async def update_feedback(
     body: dict,
     current_user: dict = Depends(get_current_user),
 ):
+    await _ensure_log_owner(conversation_id, request, current_user)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             headers = {}
@@ -155,7 +203,7 @@ async def update_feedback(
 @router.get("/stats/feedback")
 async def get_feedback_stats(
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get("/api/conversations/stats/feedback", request)
 
@@ -164,7 +212,7 @@ async def get_feedback_stats(
 async def get_recent_stats(
     request: Request,
     days: int = Query(7, ge=1),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get("/api/conversations/stats/recent", request, {"days": days})
 
@@ -174,7 +222,7 @@ async def get_top_kb_stats(
     request: Request,
     days: int = Query(7, ge=1),
     limit: int = Query(10, ge=1, le=50),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get("/api/conversations/stats/top-kb", request, {"days": days, "limit": limit})
 
@@ -184,7 +232,7 @@ async def get_doc_ref_rank(
     request: Request,
     days: int = Query(7, ge=1),
     limit: int = Query(10, ge=1, le=50),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get("/api/conversations/stats/doc-ref-rank", request, {"days": days, "limit": limit})
 
@@ -193,7 +241,7 @@ async def get_doc_ref_rank(
 async def get_feedback_distribution(
     request: Request,
     days: int = Query(7, ge=1),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get("/api/conversations/stats/feedback-distribution", request, {"days": days})
 
@@ -202,7 +250,7 @@ async def get_feedback_distribution(
 async def get_daily_trend(
     request: Request,
     days: int = Query(7, ge=1),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get("/api/conversations/stats/daily-trend", request, {"days": days})
 
@@ -212,7 +260,7 @@ async def get_active_user_rank(
     request: Request,
     days: int = Query(7, ge=1),
     limit: int = Query(10, ge=1),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get("/api/conversations/stats/active-user-rank", request, {"days": days, "limit": limit})
 
@@ -221,7 +269,7 @@ async def get_active_user_rank(
 async def get_recent_conversations(
     request: Request,
     limit: int = Query(10, ge=1),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get("/api/conversations/stats/recent-conversations", request, {"limit": limit})
 
@@ -229,6 +277,6 @@ async def get_recent_conversations(
 @router.get("/stats/today")
 async def get_today_stats(
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     return await _proxy_java_get("/api/conversations/stats/today", request)

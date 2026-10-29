@@ -10,6 +10,9 @@ public class KbCreateRequest {
     private String department;
     private Integer isPublic;
 
+    /** 可见级别: PUBLIC/EMPLOYEE/MANAGEMENT，缺省 EMPLOYEE */
+    private String visibility;
+
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
     public String getDescription() { return description; }
@@ -24,4 +27,6 @@ public class KbCreateRequest {
     public void setDepartment(String department) { this.department = department; }
     public Integer getIsPublic() { return isPublic; }
     public void setIsPublic(Integer isPublic) { this.isPublic = isPublic; }
+    public String getVisibility() { return visibility; }
+    public void setVisibility(String visibility) { this.visibility = visibility; }
 }

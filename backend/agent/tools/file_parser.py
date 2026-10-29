@@ -1,5 +1,8 @@
+import json
+import os
 import httpx
 from config import JAVA_BACKEND_URL
+from utils.internal_api import internal_headers
 
 JAVA_TIMEOUT = 15.0
 FILE_MAX_CHARS = 10000
@@ -15,6 +18,7 @@ async def _file_list(directory: str = "") -> str:
             resp = await client.get(
                 f"{JAVA_BACKEND_URL}/api/internal/knowledge/list",
                 params=params,
+                headers=internal_headers(),
             )
             if resp.status_code != 200:
                 return f"无法获取知识库文档列表（HTTP {resp.status_code}）"
@@ -83,6 +87,7 @@ async def _file_read(file_path: str, encoding: str = "utf-8") -> str:
         async with httpx.AsyncClient(timeout=JAVA_TIMEOUT) as client:
             resp = await client.get(
                 f"{JAVA_BACKEND_URL}/api/internal/knowledge/{doc_id}",
+                headers=internal_headers(),
             )
             if resp.status_code != 200:
                 return f"无法获取文档 {doc_id} 的信息（HTTP {resp.status_code}）"
@@ -101,6 +106,7 @@ async def _file_read(file_path: str, encoding: str = "utf-8") -> str:
         async with httpx.AsyncClient(timeout=JAVA_TIMEOUT) as client:
             resp = await client.get(
                 f"{JAVA_BACKEND_URL}/api/internal/knowledge/chunks/{doc_id}",
+                headers=internal_headers(),
             )
             if resp.status_code != 200:
                 return f"无法获取文档 {doc_id} 的内容分块（HTTP {resp.status_code}）"
@@ -135,6 +141,7 @@ async def _resolve_document_id(name: str) -> str:
             resp = await client.get(
                 f"{JAVA_BACKEND_URL}/api/internal/knowledge/list",
                 params={"pageSize": 500},
+                headers=internal_headers(),
             )
             if resp.status_code != 200:
                 return None

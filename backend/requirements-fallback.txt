@@ -1,0 +1,29 @@
+# ============================================================================
+# 可选依赖：本地降级检索（默认不安装）
+# ============================================================================
+# 仅在使用场景为「不部署 Java 引擎、由 Python 直接用本地 ChromaDB 做向量检索」
+# 时需要，对应 backend/services/rag_service.py 的 _local_search()。
+#
+# 为什么默认不安装：
+#   1. 容器部署下 Java 引擎是 compose 兄弟服务，本地降级路径实际不可用
+#      （镜像未预置 embedding 模型，且代码使用 local_files_only=True）
+#   2. sentence-transformers 会引入 torch；Linux 上 pip 默认还会拉取 CUDA
+#      相关依赖（nvidia-*），镜像体积会从约 1GB 膨胀到数 GB，
+#      离线交付介质与内网拷贝成本急剧上升
+#
+# 启用方式（二选一）：
+#   A. 构建镜像时：
+#        docker compose build --build-arg INSTALL_FALLBACK=true backend
+#   B. 本地开发时：
+#        pip install -r requirements-fallback.txt
+#
+# 只想装 CPU 版 torch（体积小很多）时，加上 PyTorch 官方 CPU 索引：
+#   pip install -r requirements-fallback.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cpu
+#
+# 注意：启用后还需准备本地 embedding 模型（默认 BAAI/bge-small-zh-v1.5），
+# 因为代码以 local_files_only=True 加载，不会在运行时联网下载。
+# ============================================================================
+
+chromadb>=1.0.0
+sentence-transformers>=3.1.0

@@ -1,4 +1,4 @@
-﻿"""
+"""
 知识库种子脚本
 
 创建企业知识库并上传 6 个企业制度文档。
@@ -10,6 +10,8 @@ import os
 import sys
 import httpx
 from pathlib import Path
+
+from utils.internal_api import internal_headers
 
 JAVA_BACKEND = os.getenv("JAVA_BACKEND_URL", "http://localhost:8002")
 PYTHON_BACKEND = os.getenv("PYTHON_BACKEND_URL", "http://localhost:8001")
@@ -59,7 +61,9 @@ def main():
     print("Java 后端已连接\n")
 
     token = login()
-    auth_headers = {"Authorization": f"Bearer {token}"}
+    # 同时携带用户 JWT 与内部接口令牌：创建知识库走 /api/internal/**，
+    # 文档上传走 /api/knowledge/**，两套鉴权都需要。
+    auth_headers = internal_headers({"Authorization": f"Bearer {token}"})
 
     with httpx.Client(timeout=timeout) as client:
         print(f"\n创建知识库: {KB_NAME}")

@@ -4,7 +4,8 @@ import sys
 import os
 
 BASE_URL = os.getenv("PYTHON_BACKEND_URL", "http://localhost:8001")
-TEST_USERNAME = os.getenv("TEST_USERNAME", "testuser")
+# 每次运行使用唯一用户名，避免依赖既有账号的密码状态
+TEST_USERNAME = os.getenv("TEST_USERNAME", f"testuser_{os.urandom(3).hex()}")
 TEST_PASSWORD = os.getenv("TEST_PASSWORD", "test123456")
 TEST_DISPLAY = "测试用户"
 
@@ -61,6 +62,20 @@ async def run():
         await check("登录用户聊天", lambda: _user_chat())
     if token and session_id:
         await check("获取会话历史", lambda: _get_history())
+
+    # ---- 4.5 权限与安全（2026-10-24 修复项回归） ----
+    print("\n[4.5] 权限与安全")
+    other_token = None
+    other_session_id = None
+    if token:
+        await check("越权访问他人会话历史被拒", lambda: _cross_user_history())
+
+    # ---- 5. 知识库功能 ----
+    print("\n[5] 知识库功能")
+    if token:
+        await check("获取文档列表", lambda: _list_documents())
+        await check("获取手动条目", lambda: _list_entries())
+        await check("搜索知识库", lambda: _search_kb())
 
     # ---- 5. 知识库功能 ----
     print("\n[5] 知识库功能")
@@ -208,6 +223,27 @@ async def _get_history():
         data = r.json()
         assert data.get("success"), f"success=false body={body}"
         assert len(data.get("data", [])) > 0, f"data={data.get('data')}"
+
+
+async def _cross_user_history():
+    """用另一个账号访问 testuser 的会话历史，应返回 404（会话越权修复回归）"""
+    global other_token, other_session_id
+    suffix = os.urandom(3).hex()
+    other_name = f"testuser_b_{suffix}"
+    async with httpx.AsyncClient(timeout=10) as c:
+        await c.post(f"{BASE_URL}/api/auth/register", json={
+            "username": other_name, "password": "test123456", "display_name": "测试用户B",
+        })
+        r = await c.post(f"{BASE_URL}/api/auth/login", json={
+            "username": other_name, "password": "test123456",
+        })
+        assert r.status_code == 200, f"辅助账号登录失败: {r.status_code} {r.text[:200]}"
+        other_token = r.json()["data"]["access_token"]
+
+        r = await c.get(f"{BASE_URL}/api/sessions/{session_id}/history", headers={
+            "Authorization": f"Bearer {other_token}",
+        })
+        assert r.status_code == 404, f"越权访问应 404，实际 {r.status_code}"
 
 
 async def _list_documents():

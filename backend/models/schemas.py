@@ -5,6 +5,7 @@ from typing import Optional, List
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    kb_id: Optional[str] = None
 
 
 class GuestChatRequest(BaseModel):

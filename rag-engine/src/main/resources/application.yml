@@ -14,11 +14,21 @@ spring:
   profiles:
     active: dev
 
+  # 本地（非 Docker）运行时从仓库根目录的 .env 读取配置；
+  # Docker 环境由 compose 注入同名环境变量，故此导入为 optional。
+  # ./ 对应 IDE / mvn spring-boot:run 从 rag-engine/ 启动的场景；
+  # ../ 对应从项目根目录启动 jar 的场景。
+  config:
+    import:
+      - optional:file:./.env[.properties]
+      - optional:file:../.env[.properties]
+
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/rag_engine?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
     username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD:19980315}
+    # 不设默认值：未配置时启动即失败，避免回落到硬编码弱口令
+    password: ${DB_PASSWORD}
     hikari:
       minimum-idle: 5
       maximum-pool-size: 20
@@ -65,9 +75,19 @@ rag:
     collection-name: rag_knowledge
     parent-collection-name: rag_knowledge_parent
     vector-size: 512
+  cors:
+    # 允许的前端来源，逗号分隔，支持通配（如 http://*.example.com）。
+    # 生产环境必须显式改为真实域名，不要使用 *
+    allowed-origins: ${CORS_ALLOW_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:8001,http://127.0.0.1:8001,http://localhost,http://127.0.0.1}
+  internal:
+    # 服务间接口 /api/internal/** 的共享令牌。
+    # 不设默认值：未配置则 Java 启动失败，内部接口保持关闭（fail closed）
+    token: ${INTERNAL_API_TOKEN:${INTERNAL_TOKEN:}}
 
 jwt:
-  secret: ${JWT_SECRET:rag-study-dev-secret-key-2024-must-be-32bytes}
+  # 兼容 JWT_SECRET (Docker Compose) 和 JWT_SECRET_KEY (Python .env) 两种变量名
+  # 不设默认值：必须与 Python 的 JWT_SECRET_KEY 使用同一值
+  secret: ${JWT_SECRET:${JWT_SECRET_KEY:}}
   expiration: 86400000
   refresh-expiration: 604800000
 

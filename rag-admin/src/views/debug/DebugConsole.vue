@@ -89,6 +89,9 @@ import { debugSearch, getTestCases, saveTestCase as saveTestCaseApi, deleteTestC
 import { getKbs } from '../../api/kb'
 import { ElMessage } from 'element-plus'
 
+// 支持父组件（如知识库配置页的"检索调试"页签）预选知识库
+const props = defineProps({ defaultKbId: { type: [Number, String], default: null } })
+
 const kbList = ref([])
 const searching = ref(false)
 const results = ref([])
@@ -97,7 +100,7 @@ const testCaseVisible = ref(false)
 const tcFormRef = ref(null)
 const runningAll = ref(false)
 
-const form = reactive({ kbId: null, strategy: 'semantic', topK: 5, query: '' })
+const form = reactive({ kbId: props.defaultKbId ? Number(props.defaultKbId) : null, strategy: 'semantic', topK: 5, query: '' })
 const tcForm = reactive({ name: '', kbId: null, query: '', expectedCount: 5 })
 
 const loadKbList = async () => {

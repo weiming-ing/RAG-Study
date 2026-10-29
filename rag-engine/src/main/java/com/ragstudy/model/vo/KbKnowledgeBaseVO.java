@@ -23,6 +23,9 @@ public class KbKnowledgeBaseVO {
 
     private String accessLevel;
 
+    /** KB 自身可见级别: PUBLIC/EMPLOYEE/MANAGEMENT */
+    private String visibilityLevel;
+
     private Integer chunkSize;
     private Integer chunkOverlap;
     private String embeddingModel;
@@ -66,6 +69,8 @@ public class KbKnowledgeBaseVO {
     public void setDocumentCount(Long documentCount) { this.documentCount = documentCount; }
     public String getAccessLevel() { return accessLevel; }
     public void setAccessLevel(String accessLevel) { this.accessLevel = accessLevel; }
+    public String getVisibilityLevel() { return visibilityLevel; }
+    public void setVisibilityLevel(String visibilityLevel) { this.visibilityLevel = visibilityLevel; }
     public Integer getChunkSize() { return chunkSize; }
     public void setChunkSize(Integer chunkSize) { this.chunkSize = chunkSize; }
     public Integer getChunkOverlap() { return chunkOverlap; }

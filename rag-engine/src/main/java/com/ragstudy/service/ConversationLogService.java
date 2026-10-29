@@ -96,10 +96,11 @@ public class ConversationLogService {
     }
 
     /**
-     * 多条件分页查询对话记录（支持 kbId/userId/keyword/feedback/日期范围过滤）
+     * 多条件分页查询对话记录（支持 kbId/userId/keyword/feedback/日期范围/sessionId 过滤）
      */
     public IPage<ConversationLog> list(int pageNum, int pageSize, String kbId, Long userId,
-                                        String keyword, Integer feedback, String startDate, String endDate) {
+                                        String keyword, Integer feedback, String startDate, String endDate,
+                                        String sessionId, String sortOrder) {
         Page<ConversationLog> page = new Page<>(pageNum, pageSize);
         LambdaQueryWrapper<ConversationLog> wrapper = new LambdaQueryWrapper<>();
 
@@ -108,6 +109,9 @@ public class ConversationLogService {
         }
         if (userId != null) {
             wrapper.eq(ConversationLog::getUserId, userId);
+        }
+        if (StringUtils.hasText(sessionId)) {
+            wrapper.eq(ConversationLog::getSessionId, sessionId);
         }
         if (StringUtils.hasText(keyword)) {
             wrapper.and(w -> w.like(ConversationLog::getQuestion, keyword)
@@ -122,7 +126,11 @@ public class ConversationLogService {
         if (StringUtils.hasText(endDate)) {
             wrapper.le(ConversationLog::getCreateTime, endDate + " 23:59:59");
         }
-        wrapper.orderByDesc(ConversationLog::getCreateTime);
+        if ("asc".equalsIgnoreCase(sortOrder)) {
+            wrapper.orderByAsc(ConversationLog::getCreateTime);
+        } else {
+            wrapper.orderByDesc(ConversationLog::getCreateTime);
+        }
 
         IPage<ConversationLog> result = conversationLogMapper.selectPage(page, wrapper);
 

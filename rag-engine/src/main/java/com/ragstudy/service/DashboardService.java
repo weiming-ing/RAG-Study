@@ -221,6 +221,45 @@ public class DashboardService {
     }
 
     /**
+     * 批量异步记录（Python 侧 _record_stats 一次上报整批，替代逐条串行 POST）。
+
+     * 自身 @Async：整批在单个后台线程处理；内部直接复用三个单条方法。
+     */
+    @Async
+    @SuppressWarnings("unchecked")
+    public void recordBatch(Map<String, Object> body) {
+        Object apiCalls = body.get("apiCalls");
+        Object docHits = body.get("docHits");
+        Object tokenUsages = body.get("tokenUsages");
+        if (apiCalls instanceof List) {
+            for (Object item : (List<Object>) apiCalls) {
+                Map<String, Object> m = (Map<String, Object>) item;
+                recordApiCall((String) m.getOrDefault("kbId", ""),
+                        (String) m.getOrDefault("apiPath", "/api/chat"),
+                        Boolean.TRUE.equals(m.get("success")),
+                        m.get("latencyMs") != null ? ((Number) m.get("latencyMs")).doubleValue() : 0);
+            }
+        }
+        if (docHits instanceof List) {
+            for (Object item : (List<Object>) docHits) {
+                Map<String, Object> m = (Map<String, Object>) item;
+                recordDocHit((String) m.getOrDefault("documentId", "unknown"),
+                        (String) m.getOrDefault("docName", "未知文档"),
+                        (String) m.getOrDefault("kbId", ""));
+            }
+        }
+        if (tokenUsages instanceof List) {
+            for (Object item : (List<Object>) tokenUsages) {
+                Map<String, Object> m = (Map<String, Object>) item;
+                Long userId = m.get("userId") != null ? ((Number) m.get("userId")).longValue() : null;
+                Long promptTokens = m.get("promptTokens") != null ? ((Number) m.get("promptTokens")).longValue() : 0L;
+                Long completionTokens = m.get("completionTokens") != null ? ((Number) m.get("completionTokens")).longValue() : 0L;
+                recordTokenUsage((String) m.getOrDefault("kbId", ""), userId, promptTokens, completionTokens);
+            }
+        }
+    }
+
+    /**
      * 异步记录 Token 用量统计（LLM 调用完成后，记录 prompt + completion tokens）
      */
     @Async

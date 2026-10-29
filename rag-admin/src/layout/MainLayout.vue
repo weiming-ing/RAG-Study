@@ -5,58 +5,40 @@
         <h2>RAG 管理后台</h2>
       </div>
       <el-menu :default-active="activeMenu" router :collapse="false" background-color="#304156" text-color="#bfcbd9" active-text-color="#409EFF">
-        <el-menu-item index="/dashboard">
-          <el-icon><DataAnalysis /></el-icon>
-          <span>监控大盘</span>
-        </el-menu-item>
-        <el-sub-menu index="system">
-          <template #title>
-            <el-icon><Setting /></el-icon>
-            <span>系统管理</span>
+        <template v-if="menuTree.length > 0">
+          <!-- 侧边栏由 sys_menu + 角色-菜单授权驱动：目录渲染为子菜单，叶子渲染为菜单项；
+               visible=0 的是带路径参数的钻取页（文档详情/分块列表），不进侧边栏 -->
+          <template v-for="item in menuTree" :key="item.id">
+            <el-sub-menu v-if="item.children && item.children.length > 0" :index="String(item.id)">
+              <template #title>
+                <el-icon><component :is="resolveIcon(item.icon)" /></el-icon>
+                <span>{{ item.menuName }}</span>
+              </template>
+              <el-menu-item v-for="child in item.children" :key="child.id" :index="child.path">
+                {{ child.menuName }}
+              </el-menu-item>
+            </el-sub-menu>
+            <el-menu-item v-else :index="item.path">
+              <el-icon><component :is="resolveIcon(item.icon)" /></el-icon>
+              <span>{{ item.menuName }}</span>
+            </el-menu-item>
           </template>
-          <el-menu-item index="/users">用户管理</el-menu-item>
-          <el-menu-item index="/roles">角色管理</el-menu-item>
-          <el-menu-item index="/menus">菜单管理</el-menu-item>
-          <el-menu-item index="/system-config">系统配置</el-menu-item>
-          <el-menu-item index="/system-logs">系统日志</el-menu-item>
-        </el-sub-menu>
-        <el-menu-item index="/kb">
-          <el-icon><Collection /></el-icon>
-          <span>知识库管理</span>
-        </el-menu-item>
-        <el-menu-item index="/documents">
-          <el-icon><Document /></el-icon>
-          <span>文档管理</span>
-        </el-menu-item>
-        <el-menu-item index="/chunks">
-          <el-icon><Grid /></el-icon>
-          <span>分块管理</span>
-        </el-menu-item>
-        <el-menu-item index="/debug">
-          <el-icon><Monitor /></el-icon>
-          <span>调试控制台</span>
-        </el-menu-item>
-        <el-menu-item index="/conversations">
-          <el-icon><ChatDotRound /></el-icon>
-          <span>对话记录</span>
-        </el-menu-item>
-        <el-menu-item index="/audit">
-          <el-icon><Tickets /></el-icon>
-          <span>审计日志</span>
-        </el-menu-item>
-        <el-sub-menu index="security">
-          <template #title>
-            <el-icon><Lock /></el-icon>
-            <span>安全风控</span>
-          </template>
-          <el-menu-item index="/security/sensitive-words">敏感词管理</el-menu-item>
-          <el-menu-item index="/security/rate-limits">限流管控</el-menu-item>
-          <el-menu-item index="/security/access-control">访问控制</el-menu-item>
-        </el-sub-menu>
-        <el-menu-item index="/api-keys">
-          <el-icon><Key /></el-icon>
-          <span>API密钥</span>
-        </el-menu-item>
+        </template>
+        <template v-else>
+          <!-- 菜单接口不可达时的兜底：至少保证登录用户能进入核心页面 -->
+          <el-menu-item index="/dashboard">
+            <el-icon><DataAnalysis /></el-icon>
+            <span>监控大盘</span>
+          </el-menu-item>
+          <el-menu-item index="/kb">
+            <el-icon><Collection /></el-icon>
+            <span>知识库管理</span>
+          </el-menu-item>
+          <el-menu-item index="/conversations">
+            <el-icon><ChatDotRound /></el-icon>
+            <span>对话记录</span>
+          </el-menu-item>
+        </template>
       </el-menu>
     </el-aside>
     <el-container>
@@ -89,9 +71,10 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { getUserMenus } from '../api/menu'
 
 const route = useRoute()
 const router = useRouter()
@@ -99,6 +82,29 @@ const authStore = useAuthStore()
 
 const currentTitle = computed(() => route.meta?.title || '')
 const activeMenu = computed(() => route.path)
+
+const menuTree = ref([])
+const loaded = ref(false)
+
+const filterVisible = (nodes) => {
+  return (nodes || [])
+    .filter(n => n.visible !== 0)
+    .map(n => ({ ...n, children: filterVisible(n.children) }))
+}
+
+const resolveIcon = (name) => name || 'Menu'
+
+onMounted(async () => {
+  try {
+    const res = await getUserMenus()
+    menuTree.value = filterVisible(Array.isArray(res.data) ? res.data : [])
+  } catch (e) {
+    console.warn('加载用户菜单失败，侧边栏使用兜底项', e)
+    menuTree.value = []
+  } finally {
+    loaded.value = true
+  }
+})
 
 const handleLogout = () => {
   authStore.logout()

@@ -1,19 +1,26 @@
 import os
 import uuid
+import asyncio
 import httpx
 from typing import Optional, List
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body, Request
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query, Body, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from config import DATA_DIR, DOCUMENTS_DIR
 from database.db import get_db
+from utils.internal_api import internal_headers
+from routes.auth import require_admin, get_current_user
+from utils.admin_audit import record_admin_op_bg
+from services import kb_access
+
+from services.docling_service import docling_service
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 JAVA_BACKEND = os.getenv("JAVA_BACKEND_URL", "http://localhost:8002")
 
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".docx"}
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".txt", ".md", ".html", ".htm", ".rtf", ".csv", ".xml"}
 MAX_FILE_SIZE = 50 * 1024 * 1024
 
 
@@ -73,11 +80,19 @@ def _get_client_ip(request: Request) -> str:
 
 
 def _get_auth_headers(request: Request) -> dict:
-    """从请求中提取 Authorization header，用于转发到 Java 后端"""
+    """构造转发到 Java 后端的请求头。
+
+    同时携带用户 Authorization（用于 /api/knowledge/** 等用户态接口）
+    与 X-Internal-Token（用于 /api/internal/** 服务间接口，由 Java 的
+    InternalApiAuthFilter 校验）。多余的请求头会被对端忽略。
+    """
     auth = request.headers.get("Authorization", "")
-    if auth:
-        return {"Authorization": auth}
-    return {}
+    return internal_headers({"Authorization": auth} if auth else None)
+
+
+async def _ensure_kb_read_access(kb_id: int, current_user: dict):
+    """文档读取的 KB 级校验，收敛到 kb_access 共享实现（与 kb_browse 同口径）。"""
+    await kb_access.ensure_kb_read_access(kb_id, current_user)
 
 
 def _java_response_to_python(java_data: dict) -> dict:
@@ -193,7 +208,11 @@ def _fix_kb_item(kb: dict) -> dict:
 # ==================== 兼容旧路由（无 kbId，必须定义在参数化路由之前，否则会被 /{kb_id}/documents 覆盖） ====================
 
 @router.get("/documents")
-async def list_documents_legacy(request: Request, pageNum: int = Query(1), pageSize: int = Query(10), keyword: str = Query(None)):
+async def list_documents_legacy(
+    request: Request,
+    pageNum: int = Query(1), pageSize: int = Query(10), keyword: str = Query(None),
+    current_user: dict = Depends(require_admin),
+):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             params = {"pageNum": pageNum, "pageSize": pageSize}
@@ -217,7 +236,7 @@ async def list_documents_legacy(request: Request, pageNum: int = Query(1), pageS
 
 
 @router.get("/documents/{doc_id}")
-async def get_document_legacy(doc_id: str, request: Request):
+async def get_document_legacy(doc_id: str, request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.get(
@@ -232,7 +251,7 @@ async def get_document_legacy(doc_id: str, request: Request):
 
 
 @router.post("/upload")
-async def upload_document_legacy(request: Request, file: UploadFile = File(...)):
+async def upload_document_legacy(request: Request, file: UploadFile = File(...), current_user: dict = Depends(require_admin)):
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
@@ -241,13 +260,29 @@ async def upload_document_legacy(request: Request, file: UploadFile = File(...))
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="文件大小超过限制 (50MB)")
 
+    parsed_markdown = ""
+    if docling_service.ready:
+        try:
+            # 同步 CPU 密集解析放到线程池，避免阻塞事件循环拖住全部并发请求
+            parsed_markdown, _ = await asyncio.to_thread(
+                docling_service.parse_to_markdown, content, file.filename
+            )
+        except Exception as e:
+            print(f"[docling] 解析失败: {e}，降级到 Java Tika 兜底")
+    else:
+        print("[docling] 解析器尚未就绪，跳过 Docling，降级到 Java Tika 兜底")
+
     files = {"file": (file.filename, content, file.content_type or "application/octet-stream")}
+    data_fields = {}
+    if parsed_markdown:
+        data_fields["parsedContent"] = parsed_markdown
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             resp = await client.post(
                 f"{JAVA_BACKEND}/api/internal/knowledge/upload",
                 files=files,
+                data=data_fields,
                 headers=_get_auth_headers(request),
             )
             java_data = resp.json()
@@ -277,7 +312,7 @@ async def upload_document_legacy(request: Request, file: UploadFile = File(...))
 
 
 @router.delete("/documents/{doc_id}")
-async def delete_document_legacy(doc_id: str, request: Request):
+async def delete_document_legacy(doc_id: str, request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.delete(
@@ -294,7 +329,7 @@ async def delete_document_legacy(doc_id: str, request: Request):
 
 
 @router.get("/documents/{doc_id}/chunks")
-async def get_document_chunks_legacy(doc_id: str, request: Request):
+async def get_document_chunks_legacy(doc_id: str, request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             resp = await client.get(
@@ -330,7 +365,11 @@ async def get_document_chunks_legacy(doc_id: str, request: Request):
 # ==================== 文档 CRUD（带 kbId） ====================
 
 @router.get("/{kb_id}/documents")
-async def list_documents(kb_id: int, request: Request, pageNum: int = Query(1), pageSize: int = Query(10), keyword: str = Query(None)):
+async def list_documents(
+    kb_id: int, request: Request, pageNum: int = Query(1), pageSize: int = Query(10), keyword: str = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    await _ensure_kb_read_access(kb_id, current_user)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             params = {"pageNum": pageNum, "pageSize": pageSize}
@@ -354,7 +393,8 @@ async def list_documents(kb_id: int, request: Request, pageNum: int = Query(1), 
 
 
 @router.get("/{kb_id}/documents/{doc_id}")
-async def get_document(kb_id: int, doc_id: str, request: Request):
+async def get_document(kb_id: int, doc_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    await _ensure_kb_read_access(kb_id, current_user)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.get(
@@ -369,7 +409,7 @@ async def get_document(kb_id: int, doc_id: str, request: Request):
 
 
 @router.post("/{kb_id}/documents/upload")
-async def upload_document(kb_id: int, request: Request, file: UploadFile = File(...)):
+async def upload_document(kb_id: int, request: Request, file: UploadFile = File(...), current_user: dict = Depends(require_admin)):
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
@@ -378,13 +418,29 @@ async def upload_document(kb_id: int, request: Request, file: UploadFile = File(
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="文件大小超过限制 (50MB)")
 
+    parsed_markdown = ""
+    if docling_service.ready:
+        try:
+            # 同步 CPU 密集解析放到线程池，避免阻塞事件循环拖住全部并发请求
+            parsed_markdown, _ = await asyncio.to_thread(
+                docling_service.parse_to_markdown, content, file.filename
+            )
+        except Exception as e:
+            print(f"[docling] 解析失败: {e}，降级到 Java Tika 兜底")
+    else:
+        print("[docling] 解析器尚未就绪，跳过 Docling，降级到 Java Tika 兜底")
+
     files = {"file": (file.filename, content, file.content_type or "application/octet-stream")}
+    data_fields = {}
+    if parsed_markdown:
+        data_fields["parsedContent"] = parsed_markdown
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             resp = await client.post(
                 f"{JAVA_BACKEND}/api/knowledge/{kb_id}/documents/upload",
                 files=files,
+                data=data_fields,
                 headers=_get_auth_headers(request),
             )
             java_data = resp.json()
@@ -411,7 +467,7 @@ async def upload_document(kb_id: int, request: Request, file: UploadFile = File(
 
 
 @router.delete("/{kb_id}/documents/{doc_id}")
-async def delete_document(kb_id: int, doc_id: str, request: Request):
+async def delete_document(kb_id: int, doc_id: str, request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.delete(
@@ -428,13 +484,14 @@ async def delete_document(kb_id: int, doc_id: str, request: Request):
 
 
 @router.post("/{kb_id}/documents/{doc_id}/reparse")
-async def reparse_document(kb_id: int, doc_id: str, request: Request):
+async def reparse_document(kb_id: int, doc_id: str, request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             resp = await client.post(
                 f"{JAVA_BACKEND}/api/knowledge/{kb_id}/documents/{doc_id}/reparse",
                 headers=_get_auth_headers(request),
             )
+            record_admin_op_bg(current_user, "REPARSE", f"重新解析文档 {doc_id} (kb_id={kb_id})", target_id=doc_id)
             return JSONResponse(content=_java_response_to_python(resp.json()))
         except httpx.ConnectError:
             raise HTTPException(status_code=503, detail="Java 后端服务未启动")
@@ -443,20 +500,49 @@ async def reparse_document(kb_id: int, doc_id: str, request: Request):
 
 
 @router.get("/{kb_id}/documents/{doc_id}/content")
-async def get_document_content(kb_id: int, doc_id: str, request: Request):
+async def get_document_content(kb_id: int, doc_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    await _ensure_kb_read_access(kb_id, current_user)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.get(
-                f"{JAVA_BACKEND}/api/internal/knowledge/{doc_id}/content",
+                f"{JAVA_BACKEND}/api/internal/knowledge/{doc_id}",
                 headers=_get_auth_headers(request),
             )
             java_data = resp.json()
-            if java_data.get("code") == 0:
-                return JSONResponse(content={
-                    "success": True,
-                    "data": {"content": java_data.get("data", {}).get("content", "")},
-                })
-            return JSONResponse(content={"success": True, "data": {"content": ""}})
+            doc_meta = java_data.get("data", {}) if java_data.get("code") == 0 else {}
+
+            merged_content = ""
+            total_chunks = doc_meta.get("chunkCount", 0)
+
+            resp2 = await client.get(
+                f"{JAVA_BACKEND}/api/internal/knowledge/chunks/{doc_id}",
+                headers=_get_auth_headers(request),
+            )
+            chunks_data = resp2.json()
+
+            if chunks_data.get("code") == 0:
+                raw_chunks = chunks_data.get("data", [])
+                total_chunks = len(raw_chunks)
+                raw_chunks.sort(key=lambda c: c.get("chunkIndex", 0))
+                merged_content = "\n\n".join([
+                    c.get("content", "") for c in raw_chunks
+                ])
+
+            if not merged_content:
+                merged_content = doc_meta.get("content", "")
+
+            return JSONResponse(content={
+                "success": True,
+                "data": {
+                    "id": doc_meta.get("id"),
+                    "content": merged_content,
+                    "fileName": doc_meta.get("name", doc_meta.get("fileName", "")),
+                    "fileType": doc_meta.get("fileType", ""),
+                    "fileSize": doc_meta.get("fileSize", 0),
+                    "status": doc_meta.get("status", ""),
+                    "totalChunks": total_chunks,
+                },
+            })
         except httpx.ConnectError:
             raise HTTPException(status_code=503, detail="Java 后端服务未启动")
         except Exception as e:
@@ -464,7 +550,8 @@ async def get_document_content(kb_id: int, doc_id: str, request: Request):
 
 
 @router.get("/{kb_id}/documents/{doc_id}/chunks")
-async def get_document_chunks(kb_id: int, doc_id: str, request: Request):
+async def get_document_chunks(kb_id: int, doc_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    await _ensure_kb_read_access(kb_id, current_user)
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             resp = await client.get(
@@ -500,7 +587,7 @@ async def get_document_chunks(kb_id: int, doc_id: str, request: Request):
 # ==================== 知识库 CRUD ====================
 
 @router.get("/kbs")
-async def list_kbs(request: Request):
+async def list_kbs(request: Request, current_user: dict = Depends(get_current_user)):
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.get(
@@ -511,6 +598,9 @@ async def list_kbs(request: Request):
             if java_data.get("code") == 0:
                 kbs = [{"id": 0, "name": "全部知识库", "description": "默认知识库", "documentCount": 0, "chunkCount": 0, "createTime": "", "status": "active"}]
                 records = java_data.get("data", {}).get("records", [])
+                accessible, is_admin = await kb_access.get_accessible_kb_ids(current_user["id"])
+                if not is_admin:
+                    records = [r for r in records if isinstance(r.get("id"), int) and r["id"] in accessible]
                 for kb in records:
                     kbs.append(_fix_kb_item(kb))
                 return JSONResponse(content={"success": True, "data": kbs})
@@ -525,7 +615,8 @@ async def list_kbs(request: Request):
 
 
 @router.get("/kbs/{kb_id}")
-async def get_kb(kb_id: int, request: Request):
+async def get_kb(kb_id: int, request: Request, current_user: dict = Depends(get_current_user)):
+    await _ensure_kb_read_access(kb_id, current_user)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.get(
@@ -545,7 +636,7 @@ async def get_kb(kb_id: int, request: Request):
 # ==================== 文档分块操作 ====================
 
 @router.put("/chunks/{chunk_id}")
-async def update_chunk(chunk_id: str, body: ChunkUpdateRequest, request: Request):
+async def update_chunk(chunk_id: str, body: ChunkUpdateRequest, request: Request, current_user: dict = Depends(require_admin)):
     java_chunk_id = _to_java_chunk_id(chunk_id)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
@@ -554,6 +645,7 @@ async def update_chunk(chunk_id: str, body: ChunkUpdateRequest, request: Request
                 json={"content": body.content},
                 headers=_get_auth_headers(request),
             )
+            record_admin_op_bg(current_user, "UPDATE", f"编辑分块 {chunk_id}", target_id=chunk_id)
             return JSONResponse(content=_java_response_to_python(resp.json()))
         except httpx.ConnectError:
             raise HTTPException(status_code=503, detail="Java 后端服务未启动")
@@ -562,7 +654,8 @@ async def update_chunk(chunk_id: str, body: ChunkUpdateRequest, request: Request
 
 
 @router.get("/chunks/{chunk_id}")
-async def get_chunk_detail(chunk_id: str, request: Request):
+async def get_chunk_detail(chunk_id: str, request: Request, current_user: dict = Depends(require_admin)):
+    """分块详情跨 KB、无法按 chunk 反查 kb_id 做细粒度校验，消费方仅管理台，直接挂管理员门禁。"""
     java_chunk_id = _to_java_chunk_id(chunk_id)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
@@ -598,13 +691,14 @@ async def get_chunk_detail(chunk_id: str, request: Request):
 # ==================== 其他 ====================
 
 @router.post("/rebuild")
-async def rebuild_knowledge_base(request: Request):
+async def rebuild_knowledge_base(request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             resp = await client.post(
                 f"{JAVA_BACKEND}/api/internal/knowledge/rebuild",
                 headers=_get_auth_headers(request),
             )
+            record_admin_op_bg(current_user, "REBUILD", "重建知识库向量索引")
             return JSONResponse(content=_java_response_to_python(resp.json()))
         except httpx.ConnectError:
             raise HTTPException(status_code=503, detail="Java 后端服务未启动")
@@ -613,13 +707,14 @@ async def rebuild_knowledge_base(request: Request):
 
 
 @router.post("/scan")
-async def scan_new_files(request: Request):
+async def scan_new_files(request: Request, current_user: dict = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             resp = await client.post(
                 f"{JAVA_BACKEND}/api/internal/knowledge/scan",
                 headers=_get_auth_headers(request),
             )
+            record_admin_op_bg(current_user, "SCAN", "扫描文档目录新增文件")
             return JSONResponse(content=_java_response_to_python(resp.json()))
         except httpx.ConnectError:
             raise HTTPException(status_code=503, detail="Java 后端服务未启动")
@@ -676,20 +771,79 @@ async def search_knowledge_base(
 
 
 @router.post("/manual")
-async def add_manual_entry(body: ManualEntryCreate):
-    raise HTTPException(status_code=503, detail="手动条目功能暂未迁移至 Java 后端")
+async def add_manual_entry(body: ManualEntryCreate, request: Request, current_user: dict = Depends(require_admin)):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.post(
+                f"{JAVA_BACKEND}/api/knowledge/0/documents/manual",
+                json={"title": body.title, "content": body.content, "tags": body.tags},
+                headers=_get_auth_headers(request),
+            )
+            record_admin_op_bg(current_user, "CREATE", f"新增手动知识条目「{body.title}」", target_name=body.title)
+            return JSONResponse(content=_java_response_to_python(resp.json()))
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503, detail="Java 后端服务未启动")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"创建手动条目失败: {e}")
 
 
 @router.get("/manual")
-async def get_manual_entries():
-    raise HTTPException(status_code=503, detail="手动条目功能暂未迁移至 Java 后端")
+async def get_manual_entries(request: Request):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.get(
+                f"{JAVA_BACKEND}/api/knowledge/0/documents",
+                headers=_get_auth_headers(request),
+            )
+            java_data = resp.json()
+            if java_data.get("code") == 0:
+                records = java_data.get("data", {}).get("records", [])
+                return JSONResponse(content={"success": True, "data": records})
+            return JSONResponse(content={"success": True, "data": []})
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503, detail="Java 后端服务未启动")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"获取手动条目失败: {e}")
 
 
 @router.put("/manual/{entry_id}")
-async def update_manual_entry(entry_id: str, body: ManualEntryUpdate):
-    raise HTTPException(status_code=503, detail="手动条目功能暂未迁移至 Java 后端")
+async def update_manual_entry(entry_id: str, body: ManualEntryUpdate, request: Request, current_user: dict = Depends(require_admin)):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            update_data = {}
+            if body.title is not None:
+                update_data["title"] = body.title
+            if body.content is not None:
+                update_data["content"] = body.content
+            if body.tags is not None:
+                update_data["tags"] = body.tags
+            resp = await client.put(
+                f"{JAVA_BACKEND}/api/knowledge/0/documents/{entry_id}",
+                json=update_data,
+                headers=_get_auth_headers(request),
+            )
+            record_admin_op_bg(current_user, "UPDATE", f"更新手动知识条目 {entry_id}", target_id=entry_id)
+            return JSONResponse(content=_java_response_to_python(resp.json()))
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503, detail="Java 后端服务未启动")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"更新手动条目失败: {e}")
 
 
 @router.delete("/manual/{entry_id}")
-async def delete_manual_entry(entry_id: str):
-    raise HTTPException(status_code=503, detail="手动条目功能暂未迁移至 Java 后端")
+async def delete_manual_entry(entry_id: str, request: Request, current_user: dict = Depends(require_admin)):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.delete(
+                f"{JAVA_BACKEND}/api/knowledge/0/documents/{entry_id}",
+                headers=_get_auth_headers(request),
+            )
+            java_data = resp.json()
+            if java_data.get("code") == 0:
+                record_admin_op_bg(current_user, "DELETE", f"删除手动知识条目 {entry_id}", target_id=entry_id)
+                return JSONResponse(content={"success": True, "message": "删除成功"})
+            return JSONResponse(content={"success": False, "error": java_data.get("message", "删除失败")})
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503, detail="Java 后端服务未启动")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"删除手动条目失败: {e}")

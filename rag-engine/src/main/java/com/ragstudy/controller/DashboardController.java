@@ -80,6 +80,12 @@ public class DashboardController {
         return ApiResponse.success();
     }
 
+    @PostMapping("/record/batch")
+    public ApiResponse<Void> recordBatch(@RequestBody Map<String, Object> body) {
+        dashboardService.recordBatch(body);
+        return ApiResponse.success();
+    }
+
     @PostMapping("/record/token-usage")
     public ApiResponse<Void> recordTokenUsage(@RequestBody Map<String, Object> body) {
         String kbId = (String) body.getOrDefault("kbId", "");

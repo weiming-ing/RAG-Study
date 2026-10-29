@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from jose import JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from utils.auth import decode_token_and_get_user
+from utils.api_key_auth import resolve_api_key_user
 
 WHITELIST_PATHS = {
     "/api/auth/login",
@@ -26,6 +27,18 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
 
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
+            # 开放 API 调用方携带 X-API-Key 而非 JWT：校验通过则以密钥归属
+            # 用户身份放行（写入 request.state.user 供限流与路由复用）
+            api_key = request.headers.get("X-API-Key", "")
+            if api_key:
+                api_user = await resolve_api_key_user(api_key)
+                if api_user is None:
+                    return JSONResponse(
+                        status_code=401,
+                        content={"success": False, "error": "无效或已禁用的 API Key"},
+                    )
+                request.state.user = api_user
+                return await call_next(request)
             return JSONResponse(
                 status_code=401,
                 content={"success": False, "error": "未提供认证令牌，请先登录"},

@@ -30,12 +30,14 @@ public class KnowledgeController {
     public ApiResponse<DocumentVO> upload(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "department", required = false) String department,
-            @RequestParam(value = "category", required = false) String category) {
+            @RequestParam(value = "category", required = false) String category,
+            @RequestParam(value = "parsedContent", required = false) String parsedContent) {
 
-        log.info("收到文档上传请求: fileName={}, department={}, category={}",
-                file.getOriginalFilename(), department, category);
+        log.info("收到文档上传请求: fileName={}, department={}, category={}, parsedContent={} chars",
+                file.getOriginalFilename(), department, category,
+                parsedContent != null ? parsedContent.length() : 0);
 
-        DocumentVO document = knowledgeBaseService.uploadDocument(file, department, category);
+        DocumentVO document = knowledgeBaseService.uploadDocument(file, department, category, parsedContent);
         return ApiResponse.success(document);
     }
 

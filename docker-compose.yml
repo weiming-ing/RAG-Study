@@ -1,33 +1,41 @@
-version: "3.8"
-
+# 说明：所有敏感值均通过仓库根 .env 注入（参考 .env.example）。
+# 使用 ${VAR:?...} 形式声明必填项：未配置时 docker compose 直接报错退出，
+# 不再回落到硬编码弱口令。
 services:
+  # ========================================
+  # 基础设施服务
+  # ========================================
+
   mysql:
     image: mysql:8.0
     container_name: rag-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: 
-      MYSQL_DATABASE: rag_engine
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rag_engine}
       MYSQL_CHARACTER_SET_SERVER: utf8mb4
       MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
     ports:
-      - "3306:3306"
+      - "${MYSQL_PORT:-3306}:3306"
     volumes:
       - rag-mysql-data:/var/lib/mysql
       - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p19980315"]
+      # 用 CMD-SHELL 让容器内 shell 展开密码变量，避免编排文件中出现明文口令
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 30s
+      retries: 10
+      start_period: 60s
+    networks:
+      - rag-network
 
   redis:
     image: redis:7-alpine
     container_name: rag-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - rag-redis-data:/data
     healthcheck:
@@ -35,24 +43,186 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - rag-network
 
   qdrant:
     image: qdrant/qdrant:latest
     container_name: rag-qdrant
     restart: unless-stopped
     ports:
-      - "6334:6334"
-      - "6333:6333"
+      # 6333 = REST，6334 = gRPC（Java 客户端走 gRPC）
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - rag-qdrant-data:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      # 新版 qdrant 镜像不含 curl，用 bash 内建的 /dev/tcp 探测端口
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - rag-network
 
+  # ========================================
+  # 应用服务
+  # ========================================
+
+  rag-engine:
+    build:
+      context: ./rag-engine
+      dockerfile: Dockerfile
+    image: rag-engine:latest
+    container_name: rag-engine
+    restart: unless-stopped
+    environment:
+      DB_USERNAME: ${DB_USERNAME:-root}
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      # /api/internal/** 的共享令牌，必须与 Python 侧 INTERNAL_API_TOKEN 一致
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
+    ports:
+      - "${JAVA_PORT:-8002}:8002"
+    volumes:
+      - rag-bm25-data:/app/data/bm25_index
+    depends_on:
+      mysql:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8002/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - rag-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        # 是否安装可选的本地降级检索依赖（chromadb + torch，体积数 GB）。
+        # 默认 false；如需单进程部署（不跑 Java 引擎）可在 .env 中设为 true。
+        INSTALL_FALLBACK: ${INSTALL_FALLBACK:-false}
+    image: rag-backend:latest
+    container_name: rag-backend
+    restart: unless-stopped
+    environment:
+      # 服务绑定
+      HOST: "0.0.0.0"
+      PORT: "8001"
+      # MySQL
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: ${DB_USERNAME:-root}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rag_engine}
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_PASSWORD: ""
+      # JWT：两个变量名指向同一值，且必须与 Java 端一致
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_SECRET_KEY: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRE_MINUTES: "1440"
+      # Java 后端
+      JAVA_BACKEND_URL: http://rag-engine:8002
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env}
+      # 允许的前端来源（逗号分隔，勿使用 *）
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
+      # Agent http_request 工具出站控制
+      HTTP_TOOL_ALLOWED_HOSTS: ${HTTP_TOOL_ALLOWED_HOSTS:-}
+      HTTP_TOOL_ALLOW_PRIVATE: ${HTTP_TOOL_ALLOW_PRIVATE:-false}
+      # LLM（OpenAI 兼容端点）。
+      # 通用名 LLM_* 优先；默认值留空，以便回落到下面的历史名 DEEPSEEK_*。
+      # 注意不要把 LLM_BASE_URL 的默认值写成 deepseek 地址：那样会覆盖
+      # 客户在 .env 里用 DEEPSEEK_BASE_URL 指定的私有端点。
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      # 历史变量名（继续兼容既有 .env）
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      # Embedding
+      EMBEDDING_MODEL_NAME: BAAI/bge-small-zh-v1.5
+      EMBEDDING_DEVICE: cpu
+      # 检索
+      TOP_K: "5"
+      USE_HYBRID_SEARCH: "true"
+      # 数据目录
+      DATA_DIR: /app/data
+      # 授权（私有化交付）
+      LICENSE_FILE: ${LICENSE_FILE:-/app/license.json}
+      # 机器绑定用的机器标识：容器内 /etc/machine-id 会随容器重建而改变，
+      # 因此由 install.sh 从宿主机取值注入，保证授权不会因重建失效
+      LICENSE_MACHINE_ID: ${LICENSE_MACHINE_ID:-}
+    ports:
+      - "${PYTHON_PORT:-8001}:8001"
+    volumes:
+      - rag-documents-data:/app/data/documents
+      - rag-sqlite-data:/app/data
+      # 授权文件只读挂入；install.sh 会保证该路径是文件而不是被 Docker 误建成目录
+      - ./license.json:/app/license.json:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rag-engine:
+        condition: service_started
+    networks:
+      - rag-network
+
+  frontend:
+    build:
+      context: ./rag-admin
+      dockerfile: Dockerfile
+      # 额外构建上下文：把员工聊天页（frontend/）一并打进同一个 Nginx 镜像，
+      # 使 80 端口成为统一入口（/ 聊天页，/admin/ 管理台）。
+      # 这样无需把构建上下文改成仓库根，也就避免引入根级 .dockerignore
+      # 与超大构建上下文的问题。
+      additional_contexts:
+        chatui: ./frontend
+    image: rag-frontend:latest
+    container_name: rag-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      - backend
+    networks:
+      - rag-network
+
+# ========================================
+# 数据卷
+# ========================================
 volumes:
   rag-mysql-data:
+    name: rag-mysql-data
   rag-redis-data:
+    name: rag-redis-data
   rag-qdrant-data:
+    name: rag-qdrant-data
+  rag-bm25-data:
+    name: rag-bm25-data
+  rag-documents-data:
+    name: rag-documents-data
+  rag-sqlite-data:
+    name: rag-sqlite-data
+
+# ========================================
+# 网络
+# ========================================
+networks:
+  rag-network:
+    name: rag-network
+    driver: bridge

@@ -4,7 +4,9 @@ import httpx
 import asyncio
 from pathlib import Path
 
-JAVA_BACKEND = "http://localhost:8002"
+from utils.internal_api import internal_headers
+
+JAVA_BACKEND = os.getenv("JAVA_BACKEND_URL", "http://localhost:8002")
 DOCS_DIR = Path(__file__).resolve().parent.parent / "data" / "documents"
 
 
@@ -17,6 +19,7 @@ async def upload_file(client: httpx.AsyncClient, filepath: str) -> dict:
 
     resp = await client.post(
         f"{JAVA_BACKEND}/api/internal/knowledge/upload",
+        headers=internal_headers(),
         files=files,
         data={"department": "企业制度", "category": "管理规范"},
     )

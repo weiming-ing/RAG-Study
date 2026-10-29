@@ -27,7 +27,13 @@ request.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('userInfo')
-      window.location.href = '/login'
+      // 应用部署在 /admin/ 子路径下，跳根路径会 404
+      window.location.href = '/admin/login'
+      return Promise.reject(error)
+    }
+    if (error.response?.status === 403) {
+      const detail = error.response?.data?.error || error.response?.data?.message || ''
+      ElMessage.error(detail || '没有操作权限（角色信息可能已过期，请重新登录）')
       return Promise.reject(error)
     }
     if (error.response?.status === 404) {

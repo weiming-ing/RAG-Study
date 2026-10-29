@@ -1,17 +1,32 @@
+"""
+统一的 LLM 客户端（OpenAI 兼容协议）
+
+设计要点：
+  - 只依赖 OpenAI 兼容的 /v1/chat/completions 与 /v1/models，因此可对接
+    vLLM / Ollama / LMDeploy / Xinference / 国产云 API 兼容模式 / One-API 网关等，
+    换模型只需改环境变量，无需改代码。
+  - base_url 两种写法都兼容：https://host 与 https://host/v1
+    （用户按 OpenAI 文档习惯写 /v1 时，不做归一化就会拼成 /v1/v1/chat/completions）
+  - 错误信息不再写死 "DeepSeek"，便于私有化交付时向客户展示真实原因。
+
+变量名兼容：config.py 中 LLM_*（推荐）与 DEEPSEEK_*（历史）都能用。
+"""
+
 import json
 from typing import AsyncGenerator, Optional, List
+
 import httpx
 
-from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
 
-class DeepSeekClient:
-    """统一的 DeepSeek API 客户端，管理连接、认证和请求"""
+class LLMClient:
+    """OpenAI 兼容协议的 LLM 客户端，管理连接、认证和请求"""
 
     def __init__(self):
-        self.api_key = DEEPSEEK_API_KEY
-        self.base_url = DEEPSEEK_BASE_URL
-        self.model = DEEPSEEK_MODEL
+        self.api_key = LLM_API_KEY
+        self.base_url = LLM_BASE_URL
+        self.model = LLM_MODEL
 
     def _headers(self) -> dict:
         return {
@@ -20,7 +35,26 @@ class DeepSeekClient:
         }
 
     def _url(self, path: str) -> str:
-        return f"{self.base_url}{path}"
+        """拼接请求地址，容忍 base_url 结尾带 / 或带 /v1 两种写法。"""
+        base = (self.base_url or "").rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        return f"{base}{path}"
+
+    def _error(self, response, data) -> RuntimeError:
+        detail = ""
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict):
+                detail = err.get("message", "")
+            elif err:
+                detail = str(err)
+        if not detail:
+            detail = (response.text or "")[:300]
+        return RuntimeError(
+            f"LLM 调用失败: HTTP {response.status_code}（端点 {self.base_url}，模型 {self.model}）"
+            f"{'：' + detail if detail else ''}"
+        )
 
     async def chat_completion(
         self,
@@ -43,6 +77,8 @@ class DeepSeekClient:
                 },
             )
             data = response.json()
+            if response.status_code != 200:
+                raise self._error(response, data)
             return data.get("choices", [{}])[0].get("message", {}).get("content")
 
     async def chat_completion_stream(
@@ -111,12 +147,8 @@ class DeepSeekClient:
             )
             data = response.json()
 
-            if "error" in data:
-                error_msg = data["error"].get("message", str(data["error"]))
-                raise RuntimeError(f"DeepSeek API 错误: {error_msg}")
-
             if response.status_code != 200:
-                raise RuntimeError(f"DeepSeek API 返回 HTTP {response.status_code}: {data}")
+                raise self._error(response, data)
 
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
@@ -173,15 +205,25 @@ class DeepSeekClient:
                             continue
 
     async def check_health(self) -> bool:
+        """探测端点可用性。
+
+        注意：并非所有 OpenAI 兼容服务都实现 /v1/models（部分网关返回 404/405）。
+        这类响应说明"端点存在但未实现该探测接口"，仍视为可用；
+        401/403 表示地址可达但密钥不对，视为不可用。
+        """
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(
                     self._url("/v1/models"),
                     headers={"Authorization": f"Bearer {self.api_key}"},
                 )
-                return resp.status_code == 200
+                if resp.status_code == 200:
+                    return True
+                return resp.status_code in (404, 405)
         except Exception:
             return False
 
 
-deepseek_client = DeepSeekClient()
+llm_client = LLMClient()
+# 向后兼容别名（历史代码使用 deepseek_client）
+deepseek_client = llm_client

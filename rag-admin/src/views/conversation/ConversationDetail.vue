@@ -66,7 +66,7 @@
     </el-card>
 
     <!-- 引用追溯对话框：对话→切片→文档 -->
-    <el-dialog v-model="chunkTraceVisible" title="引用追溯" width="700px" top="5vh">
+    <el-dialog v-model="chunkTraceVisible" title="引用追溯" width="840px" top="5vh">
       <div v-if="chunkTraceLoading" style="text-align: center; padding: 40px;">
         <el-icon class="is-loading" :size="24"><Loading /></el-icon>
         <p style="margin-top: 12px; color: #909399;">加载中...</p>
@@ -74,36 +74,45 @@
       <div v-else-if="chunkTraceList.length === 0" style="text-align: center; padding: 40px; color: #909399;">
         暂无引用数据
       </div>
-      <el-timeline v-else>
-        <el-timeline-item
-          v-for="(item, idx) in chunkTraceList"
-          :key="idx"
-          :timestamp="item.docName || '未知文档'"
-          placement="top"
-          color="#409EFF"
-        >
-          <div class="trace-item">
-            <div class="trace-meta">
-              <el-tag size="small" type="info">chunk: {{ item.chunkId }}</el-tag>
-              <el-tag v-if="item.kbName" size="small" type="success">{{ item.kbName }}</el-tag>
-              <el-tag v-if="item.chunkIndex !== null && item.chunkIndex !== undefined" size="small">
-                切片 #{{ item.chunkIndex }}
-              </el-tag>
-            </div>
-            <div class="trace-content" v-if="item.chunkContent">
-              {{ item.chunkContent }}
-            </div>
-            <div class="trace-content" v-else style="color: #e6a23c;">
-              (切片内容已删除)
-            </div>
-            <div class="trace-doc-link" v-if="item.docId">
-              <el-link type="primary" :href="`/documents?docId=${item.docId}`" target="_blank">
-                查看文档详情 →
-              </el-link>
-            </div>
+      <div v-else>
+        <div class="merged-preview-section">
+          <div class="merged-preview-header">
+            <span class="merged-preview-title">文档合并预览</span>
+            <el-tag size="small" type="info">共 {{ chunkTraceList.length }} 个分块</el-tag>
           </div>
-        </el-timeline-item>
-      </el-timeline>
+          <div class="merged-preview-content" v-html="mergedTraceContent"></div>
+        </div>
+        <el-divider>分块明细</el-divider>
+        <el-timeline>
+          <el-timeline-item
+            v-for="(item, idx) in chunkTraceList"
+            :key="idx"
+            :timestamp="item.docName || '未知文档'"
+            placement="top"
+            color="#409EFF"
+          >
+            <div class="trace-item">
+              <div class="trace-meta">
+                <el-tag size="small" type="info">chunk: {{ item.chunkId }}</el-tag>
+                <el-tag v-if="item.kbName" size="small" type="success">{{ item.kbName }}</el-tag>
+                <el-tag v-if="item.chunkIndex !== null && item.chunkIndex !== undefined" size="small">
+                  切片 #{{ item.chunkIndex }}
+                </el-tag>
+              </div>
+              <div class="trace-content" v-if="item.chunkContent" v-html="renderMarkdown(item.chunkContent)">
+              </div>
+              <div class="trace-content" v-else style="color: #e6a23c;">
+                (切片内容已删除)
+              </div>
+              <div class="trace-doc-link" v-if="item.docId">
+                <el-link type="primary" :href="`/documents?docId=${item.docId}`" target="_blank">
+                  查看文档详情 →
+                </el-link>
+              </div>
+            </div>
+          </el-timeline-item>
+        </el-timeline>
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -114,6 +123,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { getConversations, updateFeedback as updateFeedbackApi, getConversationChunkTrace } from '../../api/conversation'
 import { ElMessage } from 'element-plus'
 import { Document, Loading } from '@element-plus/icons-vue'
+import { marked } from 'marked'
 
 const route = useRoute()
 const router = useRouter()
@@ -191,6 +201,20 @@ const updateFeedback = async (item) => {
 const chunkTraceVisible = ref(false)
 const chunkTraceLoading = ref(false)
 const chunkTraceList = ref([])
+
+const mergedTraceContent = computed(() => {
+  const chunks = [...chunkTraceList.value]
+  chunks.sort((a, b) => (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0))
+  return chunks
+    .map((c) => (c.chunkContent || '').trim())
+    .filter(Boolean)
+    .join('\n\n')
+})
+
+const renderMarkdown = (text) => {
+  if (!text) return ''
+  return marked(text)
+}
 
 const showChunkTrace = async (item) => {
   chunkTraceVisible.value = true
@@ -327,6 +351,104 @@ const goBack = () => {
 }
 
 /* 引用追溯对话框 */
+.merged-preview-section {
+  margin-bottom: 8px;
+}
+.merged-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.merged-preview-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+.merged-preview-content {
+  font-size: 14px;
+  line-height: 1.85;
+  color: #24292e;
+  background: #fafbfc;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  padding: 24px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.merged-preview-content :deep(h1) {
+  font-size: 1.6em;
+  font-weight: 600;
+  margin: 20px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e8eaed;
+}
+.merged-preview-content :deep(h2) {
+  font-size: 1.3em;
+  font-weight: 600;
+  margin: 16px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #e8eaed;
+}
+.merged-preview-content :deep(h3) {
+  font-size: 1.1em;
+  font-weight: 600;
+  margin: 12px 0 6px;
+}
+.merged-preview-content :deep(p) {
+  margin: 6px 0;
+}
+.merged-preview-content :deep(ul),
+.merged-preview-content :deep(ol) {
+  padding-left: 22px;
+  margin: 6px 0;
+}
+.merged-preview-content :deep(li) {
+  margin: 3px 0;
+}
+.merged-preview-content :deep(code) {
+  background: #f0f0f0;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 0.88em;
+}
+.merged-preview-content :deep(pre) {
+  background: #f4f5f7;
+  padding: 14px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+.merged-preview-content :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+.merged-preview-content :deep(blockquote) {
+  border-left: 3px solid #dfe2e5;
+  margin: 10px 0;
+  padding: 4px 14px;
+  color: #6a737d;
+}
+.merged-preview-content :deep(table) {
+  border-collapse: collapse;
+  margin: 10px 0;
+  width: 100%;
+}
+.merged-preview-content :deep(th),
+.merged-preview-content :deep(td) {
+  border: 1px solid #dfe2e5;
+  padding: 6px 10px;
+  text-align: left;
+}
+.merged-preview-content :deep(th) {
+  background: #f4f5f7;
+  font-weight: 600;
+}
+.merged-preview-content :deep(tr:nth-child(even)) {
+  background: #fafbfc;
+}
+
 .trace-item {
   padding: 4px 0;
 }

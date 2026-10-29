@@ -23,7 +23,11 @@ import static io.qdrant.client.PointIdFactory.id;
 import static io.qdrant.client.QueryFactory.nearest;
 import static io.qdrant.client.ValueFactory.value;
 import static io.qdrant.client.VectorsFactory.vectors;
+import static io.qdrant.client.ConditionFactory.filter;
+import static io.qdrant.client.ConditionFactory.match;
 import static io.qdrant.client.ConditionFactory.matchKeyword;
+import static io.qdrant.client.ConditionFactory.matchKeywords;
+import static io.qdrant.client.ConditionFactory.matchValues;
 
 /**
  * 向量存储服务实现（Qdrant）
@@ -198,9 +202,13 @@ public class VectorStoreServiceImpl implements VectorStoreService {
             // 如果提供了过滤条件（如按知识库/文档筛选），则添加到查询中
             if (filters != null && !filters.isEmpty()) {
                 Filter.Builder filterBuilder = Filter.newBuilder();
-                for (Map.Entry<String, String> filter : filters.entrySet()) {
-                    // matchKeyword 生成精确匹配条件，只有 payload 中对应字段完全匹配时才返回
-                    filterBuilder.addMust(matchKeyword(filter.getKey(), filter.getValue()));
+                for (Map.Entry<String, String> filterEntry : filters.entrySet()) {
+                    if ("kbIds".equals(filterEntry.getKey())) {
+                        // 多知识库范围：同一 kbId 字段的多值 OR 组（三级可见级别的服务端强制范围）
+                        filterBuilder.addMust(buildKbIdsMatch(filterEntry.getValue()));
+                        continue;
+                    }
+                    filterBuilder.addMust(buildTypeAgnosticMatch(filterEntry.getKey(), filterEntry.getValue()));
                 }
                 queryBuilder.setFilter(filterBuilder.build());
             }
@@ -213,6 +221,7 @@ public class VectorStoreServiceImpl implements VectorStoreService {
             for (ScoredPoint point : scoredPoints) {
                 Map<String, Object> metadata = new HashMap<>();
                 String content = null;
+                String parentContent = null;
                 // 从 payload 中提取数据：content 单独取出，其他字段放入 metadata
                 Map<String, io.qdrant.client.grpc.JsonWithInt.Value> payloadMap = point.getPayloadMap();
                 for (Map.Entry<String, io.qdrant.client.grpc.JsonWithInt.Value> entry : payloadMap.entrySet()) {
@@ -220,22 +229,27 @@ public class VectorStoreServiceImpl implements VectorStoreService {
                     if (v.hasStringValue()) {
                         String val = v.getStringValue();
                         if ("content".equals(entry.getKey())) {
-                            content = val;  // content 单独存，用于后续构建 prompt
+                            content = val;
+                        } else if ("parentContent".equals(entry.getKey())) {
+                            parentContent = val;
+                            metadata.put(entry.getKey(), val);
                         } else {
-                            metadata.put(entry.getKey(), val);  // 其他字段（如 chunkId, docName）存入 metadata
+                            metadata.put(entry.getKey(), val);
                         }
                     } else if (v.hasIntegerValue()) {
                         metadata.put(entry.getKey(), v.getIntegerValue());
                     }
                 }
-                metadata.put("source", "vector");  // 标记来源为向量检索，方便后续混合检索区分
+                metadata.put("source", "vector");
 
-                // 构建统一的结果对象
                 SearchResultVO result = SearchResultVO.builder()
-                        .id(point.getId().getUuid())  // Qdrant 中的 UUID
-                        .content(content)             // 切片文本
-                        .score(point.getScore())      // 余弦相似度分数
-                        .metadata(metadata)           // 元数据（docName, chunkId, parentChunkId 等）
+                        .id(point.getId().getUuid())
+                        .chunkId((String) metadata.getOrDefault("chunkId", ""))
+                        .content(content)
+                        .parentContent(parentContent)
+                        .parentChunkId((String) metadata.getOrDefault("parentChunkId", ""))
+                        .score(point.getScore())
+                        .metadata(metadata)
                         .build();
                 results.add(result);
             }
@@ -246,6 +260,54 @@ public class VectorStoreServiceImpl implements VectorStoreService {
             log.error("向量检索失败: collection={}", collectionName, e);
             return List.of();
         }
+    }
+
+    /**
+     * 构建类型无关的精确匹配条件（同一过滤值同时兼容字符串与整数 payload）
+     *
+     * 背景：upsertBatch 将 Number 类型的 payload（如 kbId）统一写成整数，
+     * 而 matchKeyword 只能匹配字符串 payload——若只按字符串过滤，向量路径
+     * 会静默匹配不到任何结果。因此对每个过滤值生成 [字符串匹配 OR 整数匹配]
+     * 的 should 组合，再作为一个 must 条件参与外层 AND，新旧数据均无需重建集合。
+     */
+    private Points.Condition buildTypeAgnosticMatch(String key, String value) {
+        Points.Filter.Builder orGroup = Points.Filter.newBuilder()
+                .addShould(matchKeyword(key, value));
+        try {
+            orGroup.addShould(match(key, Long.parseLong(value)));
+        } catch (NumberFormatException ignored) {
+            // 非数字过滤值只需字符串分支
+        }
+        return filter(orGroup.build());
+    }
+
+    /**
+     * 多知识库 OR 匹配：kbIds 逗号分隔（如 "1,2,3"）。
+     * payload 中 kbId 存量数据是整数、新数据可能是字符串，因此用
+     * matchValues（整数列表）+ matchKeywords（字符串列表）双分支 OR，作为单个 must 条件。
+     */
+    private Points.Condition buildKbIdsMatch(String kbIdsCsv) {
+        Points.Filter.Builder orGroup = Points.Filter.newBuilder();
+        List<Long> numeric = new ArrayList<>();
+        List<String> textual = new ArrayList<>();
+        for (String part : kbIdsCsv.split(",")) {
+            String trimmed = part.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            textual.add(trimmed);
+            try {
+                numeric.add(Long.parseLong(trimmed));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        if (!textual.isEmpty()) {
+            orGroup.addShould(matchKeywords("kbId", textual));
+        }
+        if (!numeric.isEmpty()) {
+            orGroup.addShould(matchValues("kbId", numeric));
+        }
+        return filter(orGroup.build());
     }
 
     /**
