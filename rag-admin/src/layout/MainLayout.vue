@@ -1,10 +1,11 @@
 <template>
   <el-container class="main-layout">
-    <el-aside width="220px" class="sidebar">
+    <el-aside :width="isCollapsed ? '64px' : '220px'" class="sidebar">
       <div class="logo">
-        <h2>RAG 管理后台</h2>
+        <h2 v-show="!isCollapsed">RAG 管理后台</h2>
+        <h2 v-show="isCollapsed" class="logo-collapsed">RAG</h2>
       </div>
-      <el-menu :default-active="activeMenu" router :collapse="false" background-color="#304156" text-color="#bfcbd9" active-text-color="#409EFF">
+      <el-menu :default-active="activeMenu" router :collapse="isCollapsed" :collapse-transition="false" background-color="#304156" text-color="#bfcbd9" active-text-color="#409EFF">
         <template v-if="menuTree.length > 0">
           <!-- 侧边栏由 sys_menu + 角色-菜单授权驱动：目录渲染为子菜单，叶子渲染为菜单项；
                visible=0 的是带路径参数的钻取页（文档详情/分块列表），不进侧边栏 -->
@@ -44,6 +45,10 @@
     <el-container>
       <el-header class="header">
         <div class="header-left">
+          <el-icon class="collapse-btn" @click="toggleCollapse">
+            <Expand v-if="isCollapsed" />
+            <Fold v-else />
+          </el-icon>
           <el-breadcrumb separator="/">
             <el-breadcrumb-item :to="{ path: '/' }">首页</el-breadcrumb-item>
             <el-breadcrumb-item v-if="currentTitle">{{ currentTitle }}</el-breadcrumb-item>
@@ -85,6 +90,11 @@ const activeMenu = computed(() => route.path)
 
 const menuTree = ref([])
 const loaded = ref(false)
+
+const isCollapsed = ref(false)
+const toggleCollapse = () => {
+  isCollapsed.value = !isCollapsed.value
+}
 
 const filterVisible = (nodes) => {
   return (nodes || [])
@@ -131,6 +141,23 @@ const handleLogout = () => {
   color: #fff;
   font-size: 18px;
   margin: 0;
+  white-space: nowrap;
+}
+.logo-collapsed {
+  font-size: 16px;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.collapse-btn {
+  font-size: 20px;
+  cursor: pointer;
+  color: #606266;
+}
+.collapse-btn:hover {
+  color: #409EFF;
 }
 .header {
   background: #fff;
